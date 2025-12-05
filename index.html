@@ -18,6 +18,10 @@
         <label>
             <input type="checkbox" id="radarToggle" checked> Radar
         </label>
+        <br>
+        <label>
+            Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
+        </label>
     </div>
     <script>
         mapboxgl.accessToken = 'pk.eyJ1IjoiZXZhbmRhcHBsZWdhdGUiLCJhIjoiY2tmbzA1cWM1MWozeTM4cXV4eHUwMzFhdiJ9.Z5f9p8jJD_N1MQwycF2NEw';
@@ -26,12 +30,32 @@
             container: 'map',
             style: 'mapbox://styles/evandapplegate/clxz2cnql006d01qj7ipr447c',
             projection: 'globe',
-            center: [-98, 39],
-            zoom: 4,
-            pitch: 60
+            center: [-104.9903, 39.7392], // Denver
+            zoom: 8,
+            pitch: 45
         });
 
+        // Add Navigation Control (Zoom + Compass/Reset Bearing)
+        map.addControl(new mapboxgl.NavigationControl());
+
         map.on('load', () => {
+            // Load Texture Pattern and Scale to 25%
+            map.loadImage('pattern1.png', (error, image) => {
+                if (error) throw error;
+                
+                // Create offscreen canvas to resize image
+                const w = image.width * 0.25;
+                const h = image.height * 0.25;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(image, 0, 0, w, h);
+                
+                // Add resized image as pattern
+                map.addImage('radar-pattern', ctx.getImageData(0, 0, w, h));
+            });
+
             map.addSource('mapbox-dem', {
                 'type': 'raster-dem',
                 'url': 'mapbox://mapbox.terrain-rgb',
@@ -40,55 +64,113 @@
             });
             map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
 
-            // Function to fetch image, trace contours, and add polygon layer
-            async function vectorizeRadar(z, x, y) {
-                const url = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`;
+            // Function to fetch and stitch multiple tiles, then vectorize
+            async function vectorizeRadarRegion(z, minX, maxX, minY, maxY) {
+                const tilesX = maxX - minX + 1;
+                const tilesY = maxY - minY + 1;
+                const tileW = 256;
+                const upscale = 2; // Upscale for smoother vectors on zoom
+                const totalW = tilesX * tileW * upscale;
+                const totalH = tilesY * tileW * upscale;
                 
-                const img = new Image();
-                img.crossOrigin = "Anonymous";
-                img.src = url;
-                
-                await new Promise(r => img.onload = r);
-                
-                // Draw to canvas to read pixels
-                const w = img.width;
-                const h = img.height;
                 const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
+                canvas.width = totalW;
+                canvas.height = totalH;
                 const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
                 
-                const imgData = ctx.getImageData(0, 0, w, h);
-                const values = new Float64Array(w * h);
+                // Fetch all tiles in parallel
+                const promises = [];
+                for (let y = minY; y <= maxY; y++) {
+                    for (let x = minX; x <= maxX; x++) {
+                        const p = new Promise((resolve) => {
+                            const img = new Image();
+                            img.crossOrigin = "Anonymous";
+                            img.onload = () => {
+                                // Draw scaled up
+                                ctx.drawImage(
+                                    img, 
+                                    (x - minX) * tileW * upscale, 
+                                    (y - minY) * tileW * upscale,
+                                    tileW * upscale, 
+                                    tileW * upscale
+                                );
+                                resolve();
+                            };
+                            img.onerror = () => resolve(); // Skip missing tiles
+                            img.src = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`;
+                        });
+                        promises.push(p);
+                    }
+                }
                 
-                // Extract "rain intensity" from pixel data
-                // Radar tiles are usually colored. We can use Alpha or Luminance.
-                // Let's use Alpha first to detect "is there stuff here"
-                for (let i = 0; i < values.length; i++) {
-                    // Alpha is at i*4 + 3
-                    // If alpha > 0, check intensity.
-                    // Mesonet tiles: Index 0-255 usually.
-                    // Simple approach: Use Alpha channel normalized 0-1
-                    values[i] = imgData.data[i * 4 + 3] / 255.0;
+                await Promise.all(promises);
+                
+                const imgData = ctx.getImageData(0, 0, totalW, totalH);
+                
+                // Pad image to close contours at edges
+                const paddedW = totalW + 2;
+                const paddedH = totalH + 2;
+                const rawValues = new Float64Array(paddedW * paddedH).fill(0);
+                
+                for (let y = 0; y < totalH; y++) {
+                    for (let x = 0; x < totalW; x++) {
+                        const srcIdx = (y * totalW + x) * 4;
+                        const dstIdx = (y + 1) * paddedW + (x + 1);
+                        rawValues[dstIdx] = imgData.data[srcIdx + 3] / 255.0;
+                    }
                 }
 
-                // Generate Contours (Marching Squares)
-                // Thresholds: 0.1 (light rain), 0.5 (heavy)
-                const thresholds = [0.1, 0.4, 0.7];
-                const contours = d3.contours()
-                    .size([w, h])
-                    .thresholds(thresholds)
-                    (values);
+                // Apply Mild Blur (Jaggy)
+                // Reduced to 1 pass of 3x3 to keep some "jags" / detail
+                let v1 = new Float64Array(rawValues);
+                let v2 = new Float64Array(paddedW * paddedH);
                 
-                // Convert pixel coordinates to Lat/Lon GeoJSON
-                // Tile to Lat/Lon transform
+                const passes = 1;
+                const radius = 1; // 3x3 kernel (minimal blur)
+                const diameter = radius * 2 + 1;
+                const divisor = diameter * diameter;
+
+                for (let p = 0; p < passes; p++) {
+                    for (let y = radius; y < paddedH - radius; y++) {
+                        for (let x = radius; x < paddedW - radius; x++) {
+                            let sum = 0;
+                            for (let dy = -radius; dy <= radius; dy++) {
+                                for (let dx = -radius; dx <= radius; dx++) {
+                                    sum += v1[(y + dy) * paddedW + (x + dx)];
+                                }
+                            }
+                            v2[y * paddedW + x] = sum / divisor;
+                        }
+                    }
+                    // Swap buffers
+                    let temp = v1;
+                    v1 = v2;
+                    v2 = temp;
+                }
+                
+                const smoothedValues = v1;
+
+                // Contours
+                // "Fake" nested layers by using progressive thresholds on the SAME smoothed field
+                // This creates concentric "eroded" shapes that look like buffers
+                const thresholds = [0.08, 0.2, 0.4]; 
+                const contours = d3.contours()
+                    .size([paddedW, paddedH])
+                    .thresholds(thresholds)
+                    (smoothedValues);
+                
+                // Coordinate Math for the whole region
                 const n = Math.pow(2, z);
-                const lon1 = x / n * 360 - 180;
-                const lon2 = (x + 1) / n * 360 - 180;
-                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
-                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n)));
+                // Top-Left of the region
+                const lon1 = minX / n * 360 - 180; 
+                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
                 const lat1 = latRad1 * 180 / Math.PI;
+                
+                // Bottom-Right of the region
+                const lon2 = (maxX + 1) / n * 360 - 180;
+                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
                 const lat2 = latRad2 * 180 / Math.PI;
                 
                 const latDiff = lat2 - lat1;
@@ -99,48 +181,52 @@
                 contours.forEach(contour => {
                     if (!contour.coordinates.length) return;
                     
-                    // contour.value is the threshold value
-                    // We can map this to a "height" or "color"
-                    
                     const geometry = {
                         type: "MultiPolygon",
-                        coordinates: contour.coordinates.map(rings => {
-                            return rings.map(ring => {
-                                return ring.map(([px, py]) => {
-                                    // Map pixel (0..256) to Lat/Lon bounds
-                                    // px is 0..w
-                                    const lon = lon1 + (px / w) * lonDiff;
-                                    // py is 0..h
-                                    const lat = lat1 + (py / h) * latDiff;
-                                    return [lon, lat];
+                        coordinates: contour.coordinates.map(polygon => {
+                            return polygon.map(ring => {
+                                const mappedRing = ring.map(([px, py]) => {
+                                    // px/py are in padded coords (0..totalW+2)
+                                    const normX = (px - 1) / totalW;
+                                    const normY = (py - 1) / totalH;
+                                    
+                                    const lon = lon1 + normX * lonDiff;
+                                    const lat = lat1 + normY * latDiff;
+                                    return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
                                 });
+
+                                if (mappedRing.length > 0) {
+                                    const first = mappedRing[0];
+                                    const last = mappedRing[mappedRing.length - 1];
+                                    if (first[0] !== last[0] || first[1] !== last[1]) {
+                                        mappedRing.push(first);
+                                    }
+                                }
+                                mappedRing.reverse();
+                                return mappedRing;
                             });
                         })
                     };
                     
                     features.push({
                         type: "Feature",
-                        properties: {
-                            level: contour.value // 0.1, 0.4, 0.7
-                        },
+                        properties: { level: contour.value },
                         geometry: geometry
                     });
                 });
 
                 if (features.length === 0) return;
 
-                const sourceId = `radar-vec-${z}-${x}-${y}`;
+                const sourceId = 'radar-conus';
                 
-                if (!map.getSource(sourceId)) {
+                if (map.getSource(sourceId)) {
+                    map.getSource(sourceId).setData({type: "FeatureCollection", features: features});
+                } else {
                     map.addSource(sourceId, {
                         type: 'geojson',
-                        data: {
-                            type: "FeatureCollection",
-                            features: features
-                        }
+                        data: { type: "FeatureCollection", features: features }
                     });
 
-                    // Shadow Layer (Ground)
                     map.addLayer({
                         id: `${sourceId}-shadow`,
                         type: 'fill',
@@ -150,9 +236,8 @@
                             'fill-opacity': 0.4,
                             'fill-antialias': false
                         }
-                    }); // Add shadow first so it's below
+                    });
 
-                    // Floating Vector Layer
                     map.addLayer({
                         id: `${sourceId}-fill`,
                         type: 'fill-extrusion',
@@ -162,55 +247,86 @@
                                 'interpolate',
                                 ['linear'],
                                 ['get', 'level'],
-                                0.1, '#00ff00', // Green
-                                0.4, '#ffff00', // Yellow
-                                0.7, '#ff0000'  // Red
+                                0.08, '#5d2c00', // Base Green
+                                0.2, '#9e4a00',  // Fake Yellow (Inner)
+                                0.4, '#ff7800'   // Fake Red (Core)
                             ],
                             'fill-extrusion-height': [
                                 'interpolate',
                                 ['linear'],
                                 ['get', 'level'],
-                                0.1, 18050, // Green: Low
-                                0.4, 18100, // Yellow: Medium
-                                0.7, 18150  // Red: High
+                                0.08, 18100, // Green Height
+                                0.2, 20100,  // Yellow Height (+200 from base)
+                                0.4, 21100   // Red Height (+200 from base + gap)
                             ],
                             'fill-extrusion-base': [
                                 'interpolate',
                                 ['linear'],
                                 ['get', 'level'],
-                                0.1, 18000, // Green sits on bottom
-                                0.4, 18050, // Yellow sits on Green
-                                0.7, 18100  // Red sits on Yellow
+                                0.08, 18000, // Green Base
+                                0.2, 18200,  // Yellow Base (+200m gap from Green base)
+                                0.4, 18400   // Red Base (+200m gap from Yellow base)
                             ],
-                            'fill-extrusion-opacity': 0.9
+                            'fill-extrusion-opacity': 0.4
+                        }
+                    });
+
+                    // Pattern Overlay Layer
+                    map.addLayer({
+                        id: `${sourceId}-pattern`,
+                        type: 'fill-extrusion',
+                        source: sourceId,
+                        paint: {
+                            'fill-extrusion-pattern': 'radar-pattern',
+                            'fill-extrusion-height': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'level'],
+                                0.08, 18100,
+                                0.2, 20100,
+                                0.4, 21100
+                            ],
+                            'fill-extrusion-base': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'level'],
+                                0.08, 18000,
+                                0.2, 18200,
+                                0.4, 18400
+                            ],
+                            'fill-extrusion-opacity': 0.05
                         }
                     });
                 }
             }
 
-            // Load a few tiles for demo (US Central)
-            // Z:4 X:3 Y:6
-            const tilesToLoad = [
-                {z:4, x:3, y:6},
-                {z:4, x:4, y:6},
-                {z:4, x:3, y:5},
-                {z:4, x:4, y:5}
-            ];
-            
-            tilesToLoad.forEach(t => vectorizeRadar(t.z, t.x, t.y));
+            // Load CONUS Region (Zoom 4)
+            // X: 2-5, Y: 5-7
+            vectorizeRadarRegion(4, 2, 5, 5, 7);
 
             // Toggle Logic
             document.getElementById('radarToggle').addEventListener('change', (e) => {
                 const visibility = e.target.checked ? 'visible' : 'none';
-                
-                // Toggle all radar layers
-                const style = map.getStyle();
-                if (style && style.layers) {
-                    style.layers.forEach(layer => {
-                        if (layer.id.includes('radar-vec-')) {
-                            map.setLayoutProperty(layer.id, 'visibility', visibility);
-                        }
-                    });
+                const layers = ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'];
+                layers.forEach(id => {
+                    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
+                });
+            });
+
+            // Opacity Logic
+            document.getElementById('radarOpacity').addEventListener('input', (e) => {
+                const opacity = parseFloat(e.target.value);
+                if (map.getLayer('radar-conus-fill')) {
+                    map.setPaintProperty('radar-conus-fill', 'fill-extrusion-opacity', opacity);
+                }
+                // Adjust shadow opacity proportionally
+                if (map.getLayer('radar-conus-shadow')) {
+                    map.setPaintProperty('radar-conus-shadow', 'fill-opacity', opacity * 0.4); 
+                }
+                // Keep pattern at steady low opacity relative to main, or fixed?
+                // User asked for "opacity 5%", likely fixed. But if main is 0, pattern should be 0.
+                if (map.getLayer('radar-conus-pattern')) {
+                    map.setPaintProperty('radar-conus-pattern', 'fill-extrusion-opacity', opacity * 0.125); // 0.4 * 0.125 = 0.05
                 }
             });
         });
