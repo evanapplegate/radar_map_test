@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vectorized Radar - d3-contour</title>
+    <title>Vectorized Radar - RainViewer</title>
     <script src='https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.js'></script>
     <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.css' rel='stylesheet' />
     <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -14,7 +14,7 @@
 </head>
 <body>
     <div id="map"></div>
-    <div style="position: absolute; top: 10px; left: 10px; z-index: 100; background: white; padding: 10px;">
+    <div style="position: absolute; top: 10px; left: 10px; z-index: 100; background: white; padding: 10px; font-family: sans-serif;">
         <label>
             <input type="checkbox" id="radarToggle" checked> Radar
         </label>
@@ -22,9 +22,17 @@
         <label>
             Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
         </label>
+        <br>
+        <label>
+            Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
+            <span id="timeLabel">Loading...</span>
+        </label>
     </div>
     <script>
         mapboxgl.accessToken = 'pk.eyJ1IjoiZXZhbmRhcHBsZWdhdGUiLCJhIjoiY2tmbzA1cWM1MWozeTM4cXV4eHUwMzFhdiJ9.Z5f9p8jJD_N1MQwycF2NEw';
+
+        let radarTimestamps = [];
+        let radarHost = 'https://tilecache.rainviewer.com'; // Default, will update from API
 
         const map = new mapboxgl.Map({
             container: 'map',
@@ -35,15 +43,12 @@
             pitch: 45
         });
 
-        // Add Navigation Control (Zoom + Compass/Reset Bearing)
         map.addControl(new mapboxgl.NavigationControl());
 
         map.on('load', () => {
-            // Load Texture Pattern and Scale to 25%
+            // Load Pattern
             map.loadImage('pattern1.png', (error, image) => {
-                if (error) throw error;
-                
-                // Create offscreen canvas to resize image
+                if (error) return; // pattern might be missing
                 const w = image.width * 0.25;
                 const h = image.height * 0.25;
                 const canvas = document.createElement('canvas');
@@ -51,8 +56,6 @@
                 canvas.height = h;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(image, 0, 0, w, h);
-                
-                // Add resized image as pattern
                 map.addImage('radar-pattern', ctx.getImageData(0, 0, w, h));
             });
 
@@ -64,180 +67,33 @@
             });
             map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
 
-            // Function to fetch and stitch multiple tiles, then vectorize
-            async function vectorizeRadarRegion(z, minX, maxX, minY, maxY) {
-                const tilesX = maxX - minX + 1;
-                const tilesY = maxY - minY + 1;
-                const tileW = 256;
-                const upscale = 2; // Upscale for smoother vectors on zoom
-                const totalW = tilesX * tileW * upscale;
-                const totalH = tilesY * tileW * upscale;
-                
-                const canvas = document.createElement('canvas');
-                canvas.width = totalW;
-                canvas.height = totalH;
-                const ctx = canvas.getContext('2d');
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = 'high';
-                
-                // Fetch all tiles in parallel
-                const promises = [];
-                for (let y = minY; y <= maxY; y++) {
-                    for (let x = minX; x <= maxX; x++) {
-                        const p = new Promise((resolve) => {
-                            const img = new Image();
-                            img.crossOrigin = "Anonymous";
-                            img.onload = () => {
-                                // Draw scaled up
-                                ctx.drawImage(
-                                    img, 
-                                    (x - minX) * tileW * upscale, 
-                                    (y - minY) * tileW * upscale,
-                                    tileW * upscale, 
-                                    tileW * upscale
-                                );
-                                resolve();
-                            };
-                            img.onerror = () => resolve(); // Skip missing tiles
-                            img.src = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`;
-                        });
-                        promises.push(p);
-                    }
-                }
-                
-                await Promise.all(promises);
-                
-                const imgData = ctx.getImageData(0, 0, totalW, totalH);
-                
-                // Pad image to close contours at edges
-                const paddedW = totalW + 2;
-                const paddedH = totalH + 2;
-                const rawValues = new Float64Array(paddedW * paddedH).fill(0);
-                
-                for (let y = 0; y < totalH; y++) {
-                    for (let x = 0; x < totalW; x++) {
-                        const srcIdx = (y * totalW + x) * 4;
-                        const dstIdx = (y + 1) * paddedW + (x + 1);
-                        rawValues[dstIdx] = imgData.data[srcIdx + 3] / 255.0;
-                    }
-                }
+            const radarCache = {};
 
-                // Apply Mild Blur (Jaggy)
-                // Reduced to 1 pass of 3x3 to keep some "jags" / detail
-                let v1 = new Float64Array(rawValues);
-                let v2 = new Float64Array(paddedW * paddedH);
-                
-                const passes = 1;
-                const radius = 1; // 3x3 kernel (minimal blur)
-                const diameter = radius * 2 + 1;
-                const divisor = diameter * diameter;
-
-                for (let p = 0; p < passes; p++) {
-                    for (let y = radius; y < paddedH - radius; y++) {
-                        for (let x = radius; x < paddedW - radius; x++) {
-                            let sum = 0;
-                            for (let dy = -radius; dy <= radius; dy++) {
-                                for (let dx = -radius; dx <= radius; dx++) {
-                                    sum += v1[(y + dy) * paddedW + (x + dx)];
-                                }
-                            }
-                            v2[y * paddedW + x] = sum / divisor;
-                        }
-                    }
-                    // Swap buffers
-                    let temp = v1;
-                    v1 = v2;
-                    v2 = temp;
-                }
-                
-                const smoothedValues = v1;
-
-                // Contours
-                // "Fake" nested layers by using progressive thresholds on the SAME smoothed field
-                // This creates concentric "eroded" shapes that look like buffers
-                const thresholds = [0.08, 0.2, 0.4]; 
-                const contours = d3.contours()
-                    .size([paddedW, paddedH])
-                    .thresholds(thresholds)
-                    (smoothedValues);
-                
-                // Coordinate Math for the whole region
-                const n = Math.pow(2, z);
-                // Top-Left of the region
-                const lon1 = minX / n * 360 - 180; 
-                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
-                const lat1 = latRad1 * 180 / Math.PI;
-                
-                // Bottom-Right of the region
-                const lon2 = (maxX + 1) / n * 360 - 180;
-                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
-                const lat2 = latRad2 * 180 / Math.PI;
-                
-                const latDiff = lat2 - lat1;
-                const lonDiff = lon2 - lon1;
-
-                const features = [];
-
-                contours.forEach(contour => {
-                    if (!contour.coordinates.length) return;
-                    
-                    const geometry = {
-                        type: "MultiPolygon",
-                        coordinates: contour.coordinates.map(polygon => {
-                            return polygon.map(ring => {
-                                const mappedRing = ring.map(([px, py]) => {
-                                    // px/py are in padded coords (0..totalW+2)
-                                    const normX = (px - 1) / totalW;
-                                    const normY = (py - 1) / totalH;
-                                    
-                                    const lon = lon1 + normX * lonDiff;
-                                    const lat = lat1 + normY * latDiff;
-                                    return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
-                                });
-
-                                if (mappedRing.length > 0) {
-                                    const first = mappedRing[0];
-                                    const last = mappedRing[mappedRing.length - 1];
-                                    if (first[0] !== last[0] || first[1] !== last[1]) {
-                                        mappedRing.push(first);
-                                    }
-                                }
-                                mappedRing.reverse();
-                                return mappedRing;
-                            });
-                        })
-                    };
-                    
-                    features.push({
-                        type: "Feature",
-                        properties: { level: contour.value },
-                        geometry: geometry
-                    });
-                });
-
-                if (features.length === 0) return;
-
+            // Helper to update map source
+            function updateMapSource(geojson) {
                 const sourceId = 'radar-conus';
                 
                 if (map.getSource(sourceId)) {
-                    map.getSource(sourceId).setData({type: "FeatureCollection", features: features});
+                    map.getSource(sourceId).setData(geojson);
                 } else {
                     map.addSource(sourceId, {
                         type: 'geojson',
-                        data: { type: "FeatureCollection", features: features }
+                        data: geojson
                     });
 
+                    // Shadow
                     map.addLayer({
                         id: `${sourceId}-shadow`,
                         type: 'fill',
                         source: sourceId,
                         paint: {
                             'fill-color': '#000000',
-                            'fill-opacity': 0.4,
+                            'fill-opacity': 0.16, // 0.4 * 0.4
                             'fill-antialias': false
                         }
                     });
 
+                    // Fill Extrusion
                     map.addLayer({
                         id: `${sourceId}-fill`,
                         type: 'fill-extrusion',
@@ -247,37 +103,10 @@
                                 'interpolate',
                                 ['linear'],
                                 ['get', 'level'],
-                                0.08, '#5d2c00', // Base Green
-                                0.2, '#9e4a00',  // Fake Yellow (Inner)
-                                0.4, '#ff7800'   // Fake Red (Core)
+                                0.08, '#5d2c00',
+                                0.2, '#9e4a00',
+                                0.4, '#ff7800'
                             ],
-                            'fill-extrusion-height': [
-                                'interpolate',
-                                ['linear'],
-                                ['get', 'level'],
-                                0.08, 18100, // Green Height
-                                0.2, 20100,  // Yellow Height (+200 from base)
-                                0.4, 21100   // Red Height (+200 from base + gap)
-                            ],
-                            'fill-extrusion-base': [
-                                'interpolate',
-                                ['linear'],
-                                ['get', 'level'],
-                                0.08, 18000, // Green Base
-                                0.2, 18200,  // Yellow Base (+200m gap from Green base)
-                                0.4, 18400   // Red Base (+200m gap from Yellow base)
-                            ],
-                            'fill-extrusion-opacity': 0.4
-                        }
-                    });
-
-                    // Pattern Overlay Layer
-                    map.addLayer({
-                        id: `${sourceId}-pattern`,
-                        type: 'fill-extrusion',
-                        source: sourceId,
-                        paint: {
-                            'fill-extrusion-pattern': 'radar-pattern',
                             'fill-extrusion-height': [
                                 'interpolate',
                                 ['linear'],
@@ -294,41 +123,236 @@
                                 0.2, 18200,
                                 0.4, 18400
                             ],
+                            'fill-extrusion-opacity': 0.4
+                        }
+                    });
+
+                    // Pattern
+                    map.addLayer({
+                        id: `${sourceId}-pattern`,
+                        type: 'fill-extrusion',
+                        source: sourceId,
+                        paint: {
+                            'fill-extrusion-pattern': 'radar-pattern',
+                            'fill-extrusion-height': [
+                                'interpolate', ['linear'], ['get', 'level'],
+                                0.08, 18100, 0.2, 20100, 0.4, 21100
+                            ],
+                            'fill-extrusion-base': [
+                                'interpolate', ['linear'], ['get', 'level'],
+                                0.08, 18000, 0.2, 18200, 0.4, 18400
+                            ],
                             'fill-extrusion-opacity': 0.05
                         }
                     });
                 }
             }
 
-            // Load CONUS Region (Zoom 4)
-            // X: 2-5, Y: 5-7
-            vectorizeRadarRegion(4, 2, 5, 5, 7);
+            // Vectorizer
+            async function vectorizeRadarRegion(z, minX, maxX, minY, maxY, timestamp) {
+                const cacheKey = timestamp || 'latest';
+                if (radarCache[cacheKey]) {
+                    updateMapSource(radarCache[cacheKey]);
+                    return;
+                }
 
-            // Toggle Logic
+                const tilesX = maxX - minX + 1;
+                const tilesY = maxY - minY + 1;
+                const tileW = 256;
+                const upscale = 2;
+                const totalW = tilesX * tileW * upscale;
+                const totalH = tilesY * tileW * upscale;
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = totalW;
+                canvas.height = totalH;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                
+                const promises = [];
+                for (let y = minY; y <= maxY; y++) {
+                    for (let x = minX; x <= maxX; x++) {
+                        const p = new Promise((resolve) => {
+                            const img = new Image();
+                            img.crossOrigin = "Anonymous";
+                            img.onload = () => {
+                                ctx.drawImage(img, (x - minX) * tileW * upscale, (y - minY) * tileW * upscale, tileW * upscale, tileW * upscale);
+                                resolve();
+                            };
+                            img.onerror = () => resolve();
+                            
+                            if (timestamp) {
+                                // RainViewer URL: {host}/v2/radar/{ts}/{size}/{z}/{x}/{y}/{color}/{options}.png
+                                img.src = `${radarHost}/v2/radar/${timestamp}/256/${z}/${x}/${y}/6/1_1.png`;
+                            } else {
+                                resolve();
+                            }
+                        });
+                        promises.push(p);
+                    }
+                }
+                
+                await Promise.all(promises);
+                
+                const imgData = ctx.getImageData(0, 0, totalW, totalH);
+                const paddedW = totalW + 2;
+                const paddedH = totalH + 2;
+                const rawValues = new Float64Array(paddedW * paddedH).fill(0);
+                
+                let sumIntensity = 0;
+                let maxVal = 0;
+                let minVal = 1.0;
+
+                for (let y = 0; y < totalH; y++) {
+                    for (let x = 0; x < totalW; x++) {
+                        const srcIdx = (y * totalW + x) * 4;
+                        const dstIdx = (y + 1) * paddedW + (x + 1);
+                        const val = imgData.data[srcIdx + 3] / 255.0;
+                        rawValues[dstIdx] = val;
+                        sumIntensity += val;
+                        if (val > maxVal) maxVal = val;
+                        if (val < minVal) minVal = val;
+                    }
+                }
+
+                const avgIntensity = sumIntensity / (totalW * totalH);
+                const range = maxVal - minVal;
+                
+                if ((maxVal > 0 && range < 0.01) || avgIntensity > 0.9) {
+                    console.warn("Discarding tile: Solid/Placeholder", { avg: avgIntensity, range });
+                    const geojson = { type: "FeatureCollection", features: [] };
+                    radarCache[cacheKey] = geojson;
+                    updateMapSource(geojson);
+                    return;
+                }
+
+                // Mild Blur (1 pass, radius 1)
+                let v1 = new Float64Array(rawValues);
+                let v2 = new Float64Array(paddedW * paddedH);
+                const passes = 1;
+                const radius = 1;
+                const diameter = radius * 2 + 1;
+                const divisor = diameter * diameter;
+
+                for (let p = 0; p < passes; p++) {
+                    for (let y = radius; y < paddedH - radius; y++) {
+                        for (let x = radius; x < paddedW - radius; x++) {
+                            let sum = 0;
+                            for (let dy = -radius; dy <= radius; dy++) {
+                                for (let dx = -radius; dx <= radius; dx++) {
+                                    sum += v1[(y + dy) * paddedW + (x + dx)];
+                                }
+                            }
+                            v2[y * paddedW + x] = sum / divisor;
+                        }
+                    }
+                    let temp = v1; v1 = v2; v2 = temp;
+                }
+                const smoothedValues = v1;
+
+                // Contours
+                const thresholds = [0.08, 0.2, 0.4]; 
+                const contours = d3.contours().size([paddedW, paddedH]).thresholds(thresholds)(smoothedValues);
+                
+                const n = Math.pow(2, z);
+                const lon1 = minX / n * 360 - 180; 
+                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
+                const lat1 = latRad1 * 180 / Math.PI;
+                const lon2 = (maxX + 1) / n * 360 - 180;
+                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
+                const lat2 = latRad2 * 180 / Math.PI;
+                const latDiff = lat2 - lat1;
+                const lonDiff = lon2 - lon1;
+
+                const features = [];
+                contours.forEach(contour => {
+                    if (!contour.coordinates.length) return;
+                    const geometry = {
+                        type: "MultiPolygon",
+                        coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
+                            const mappedRing = ring.map(([px, py]) => {
+                                const normX = (px - 1) / totalW;
+                                const normY = (py - 1) / totalH;
+                                const lon = lon1 + normX * lonDiff;
+                                const lat = lat1 + normY * latDiff;
+                                return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+                            });
+                            if (mappedRing.length > 0 && (mappedRing[0][0] !== mappedRing[mappedRing.length-1][0] || mappedRing[0][1] !== mappedRing[mappedRing.length-1][1])) {
+                                mappedRing.push(mappedRing[0]);
+                            }
+                            mappedRing.reverse();
+                            return mappedRing;
+                        }))
+                    };
+                    features.push({ type: "Feature", properties: { level: contour.value }, geometry: geometry });
+                });
+
+                const geojson = { type: "FeatureCollection", features: features };
+                radarCache[cacheKey] = geojson;
+                updateMapSource(geojson);
+            }
+
+            // Init Data
+            async function initRadarData() {
+                try {
+                    const res = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+                    const data = await res.json();
+                    
+                    if (data.host) radarHost = data.host; // e.g. https://tilecache.rainviewer.com
+
+                    if (data.radar && data.radar.past) {
+                        radarTimestamps = data.radar.past.map(i => i.time);
+                        // Add nowcast? Optional. For now just past.
+                        
+                        const slider = document.getElementById('timeSlider');
+                        slider.max = radarTimestamps.length - 1;
+                        slider.value = radarTimestamps.length - 1;
+                        
+                        const latest = radarTimestamps[radarTimestamps.length - 1];
+                        updateTimeLabel(latest);
+                        vectorizeRadarRegion(4, 2, 5, 5, 7, latest);
+                    }
+                } catch (e) {
+                    console.error("RainViewer API Error", e);
+                }
+            }
+
+            function updateTimeLabel(ts) {
+                const date = new Date(ts * 1000);
+                const h = String(date.getUTCHours()).padStart(2, '0');
+                const m = String(date.getUTCMinutes()).padStart(2, '0');
+                document.getElementById('timeLabel').innerText = `${h}:${m} Z`;
+            }
+
+            // Slider Listener
+            document.getElementById('timeSlider').addEventListener('input', (e) => {
+                const index = parseInt(e.target.value);
+                if (radarTimestamps[index]) {
+                    const ts = radarTimestamps[index];
+                    updateTimeLabel(ts);
+                    vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                }
+            });
+
+            // Toggle
             document.getElementById('radarToggle').addEventListener('change', (e) => {
                 const visibility = e.target.checked ? 'visible' : 'none';
-                const layers = ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'];
-                layers.forEach(id => {
+                ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
                     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
                 });
             });
 
-            // Opacity Logic
+            // Opacity
             document.getElementById('radarOpacity').addEventListener('input', (e) => {
                 const opacity = parseFloat(e.target.value);
-                if (map.getLayer('radar-conus-fill')) {
-                    map.setPaintProperty('radar-conus-fill', 'fill-extrusion-opacity', opacity);
-                }
-                // Adjust shadow opacity proportionally
-                if (map.getLayer('radar-conus-shadow')) {
-                    map.setPaintProperty('radar-conus-shadow', 'fill-opacity', opacity * 0.4); 
-                }
-                // Keep pattern at steady low opacity relative to main, or fixed?
-                // User asked for "opacity 5%", likely fixed. But if main is 0, pattern should be 0.
-                if (map.getLayer('radar-conus-pattern')) {
-                    map.setPaintProperty('radar-conus-pattern', 'fill-extrusion-opacity', opacity * 0.125); // 0.4 * 0.125 = 0.05
-                }
+                if (map.getLayer('radar-conus-fill')) map.setPaintProperty('radar-conus-fill', 'fill-extrusion-opacity', opacity);
+                if (map.getLayer('radar-conus-shadow')) map.setPaintProperty('radar-conus-shadow', 'fill-opacity', opacity * 0.4);
+                if (map.getLayer('radar-conus-pattern')) map.setPaintProperty('radar-conus-pattern', 'fill-extrusion-opacity', opacity * 0.125);
             });
+
+            // Start
+            initRadarData();
         });
     </script>
 </body>
