@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radar Floating - Mapbox + Three.js</title>
+    <title>Vectorized Radar - d3-contour</title>
     <script src='https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.js'></script>
     <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.css' rel='stylesheet' />
-    <script src="https://unpkg.com/three@0.126.0/build/three.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body { margin: 0; padding: 0; }
         #map { width: 100vw; height: 100vh; }
@@ -14,14 +14,19 @@
 </head>
 <body>
     <div id="map"></div>
+    <div style="position: absolute; top: 10px; left: 10px; z-index: 100; background: white; padding: 10px;">
+        <label>
+            <input type="checkbox" id="radarToggle" checked> Radar
+        </label>
+    </div>
     <script>
         mapboxgl.accessToken = 'pk.eyJ1IjoiZXZhbmRhcHBsZWdhdGUiLCJhIjoiY2tmbzA1cWM1MWozeTM4cXV4eHUwMzFhdiJ9.Z5f9p8jJD_N1MQwycF2NEw';
 
         const map = new mapboxgl.Map({
             container: 'map',
-            style: 'mapbox://styles/mapbox/satellite-streets-v12',
+            style: 'mapbox://styles/evandapplegate/clxz2cnql006d01qj7ipr447c',
             projection: 'globe',
-            center: [-98, 39], // US Center
+            center: [-98, 39],
             zoom: 4,
             pitch: 60
         });
@@ -35,144 +40,179 @@
             });
             map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
 
-            // 1. SHADOW LAYER (Ground)
-            // Standard raster layer, blackened to look like a shadow
-            map.addSource('radar-source', {
-                'type': 'raster',
-                'tiles': [
-                    'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png'
-                ],
-                'tileSize': 256
-            });
-
-            map.addLayer({
-                'id': 'radar-shadow',
-                'type': 'raster',
-                'source': 'radar-source',
-                'paint': {
-                    'raster-opacity': 0.5,
-                    'raster-brightness-max': 0, // Force black
-                    'raster-saturation': -1
+            // Function to fetch image, trace contours, and add polygon layer
+            async function vectorizeRadar(z, x, y) {
+                const url = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`;
+                
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                img.src = url;
+                
+                await new Promise(r => img.onload = r);
+                
+                // Draw to canvas to read pixels
+                const w = img.width;
+                const h = img.height;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const values = new Float64Array(w * h);
+                
+                // Extract "rain intensity" from pixel data
+                // Radar tiles are usually colored. We can use Alpha or Luminance.
+                // Let's use Alpha first to detect "is there stuff here"
+                for (let i = 0; i < values.length; i++) {
+                    // Alpha is at i*4 + 3
+                    // If alpha > 0, check intensity.
+                    // Mesonet tiles: Index 0-255 usually.
+                    // Simple approach: Use Alpha channel normalized 0-1
+                    values[i] = imgData.data[i * 4 + 3] / 255.0;
                 }
-            });
 
-            // 2. FLOATING LAYER (Three.js)
-            const customLayer = {
-                id: 'radar-3d',
-                type: 'custom',
-                renderingMode: '3d',
-                onAdd: function(map, gl) {
-                    this.camera = new THREE.Camera();
-                    this.scene = new THREE.Scene();
+                // Generate Contours (Marching Squares)
+                // Thresholds: 0.1 (light rain), 0.5 (heavy)
+                const thresholds = [0.1, 0.4, 0.7];
+                const contours = d3.contours()
+                    .size([w, h])
+                    .thresholds(thresholds)
+                    (values);
+                
+                // Convert pixel coordinates to Lat/Lon GeoJSON
+                // Tile to Lat/Lon transform
+                const n = Math.pow(2, z);
+                const lon1 = x / n * 360 - 180;
+                const lon2 = (x + 1) / n * 360 - 180;
+                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n)));
+                const lat1 = latRad1 * 180 / Math.PI;
+                const lat2 = latRad2 * 180 / Math.PI;
+                
+                const latDiff = lat2 - lat1;
+                const lonDiff = lon2 - lon1;
 
-                    // Add lights so we can see things if we use standard materials
-                    const light = new THREE.DirectionalLight(0xffffff, 1);
-                    light.position.set(0, 0, 1);
-                    this.scene.add(light);
-                    this.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+                const features = [];
 
-                    // Helper to load a tile and place it at altitude
-                    const loadTilePlane = (z, x, y) => {
-                        const url = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`;
-                        const loader = new THREE.TextureLoader();
-                        
-                        loader.load(url, (texture) => {
-                            // Calculate bounds in Lat/Lon
-                            const n = Math.pow(2, z);
-                            const lon1 = x / n * 360 - 180;
-                            const lon2 = (x + 1) / n * 360 - 180;
-                            const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
-                            const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n)));
-                            const lat1 = latRad1 * 180 / Math.PI;
-                            const lat2 = latRad2 * 180 / Math.PI;
-
-                            // Altitude in meters
-                            const altitude = 20000; // 20km up (80% closer than 100km)
-
-                            // Calculate Mercator Coordinates for the corners at altitude
-                            const c1 = mapboxgl.MercatorCoordinate.fromLngLat([lon1, lat1], altitude);
-                            const c2 = mapboxgl.MercatorCoordinate.fromLngLat([lon2, lat1], altitude);
-                            const c3 = mapboxgl.MercatorCoordinate.fromLngLat([lon2, lat2], altitude);
-                            const c4 = mapboxgl.MercatorCoordinate.fromLngLat([lon1, lat2], altitude);
-
-                            // Create Geometry
-                            const geometry = new THREE.BufferGeometry();
-                            // Three.js uses counter-clockwise triangles
-                            // 1---2
-                            // | / |
-                            // 4---3
-                            const vertices = new Float32Array([
-                                c1.x, c1.y, c1.z, // TL
-                                c4.x, c4.y, c4.z, // BL
-                                c2.x, c2.y, c2.z, // TR
-                                
-                                c4.x, c4.y, c4.z, // BL
-                                c3.x, c3.y, c3.z, // BR
-                                c2.x, c2.y, c2.z  // TR
-                            ]);
-
-                            // UVs (match the vertex order)
-                            // TL(0,1) - note texture coordinates often y-flipped in webgl
-                            // Let's try standard mapping: y=0 is bottom?
-                            // Tile image: y=0 is top usually. 
-                            // Mapbox tiles: top-left origin.
-                            // Three.js UV: (0,0) is bottom-left.
-                            // So TL is (0,1), BL is (0,0), TR is (1,1), BR is (1,0)
-                            
-                            const uvs = new Float32Array([
-                                0, 1, // TL
-                                0, 0, // BL
-                                1, 1, // TR
-                                
-                                0, 0, // BL
-                                1, 0, // BR
-                                1, 1  // TR
-                            ]);
-
-                            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-                            geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-
-                            const material = new THREE.MeshBasicMaterial({
-                                map: texture,
-                                transparent: true,
-                                opacity: 0.9,
-                                side: THREE.DoubleSide,
-                                depthTest: false // Always on top of other things in this layer
+                contours.forEach(contour => {
+                    if (!contour.coordinates.length) return;
+                    
+                    // contour.value is the threshold value
+                    // We can map this to a "height" or "color"
+                    
+                    const geometry = {
+                        type: "MultiPolygon",
+                        coordinates: contour.coordinates.map(rings => {
+                            return rings.map(ring => {
+                                return ring.map(([px, py]) => {
+                                    // Map pixel (0..256) to Lat/Lon bounds
+                                    // px is 0..w
+                                    const lon = lon1 + (px / w) * lonDiff;
+                                    // py is 0..h
+                                    const lat = lat1 + (py / h) * latDiff;
+                                    return [lon, lat];
+                                });
                             });
-
-                            const mesh = new THREE.Mesh(geometry, material);
-                            this.scene.add(mesh);
-                            map.triggerRepaint();
-                        });
+                        })
                     };
-
-                    // Load a grid of tiles covering US roughly (Zoom 4)
-                    // X: 3 to 4, Y: 5 to 6 covers a chunk
-                    // US Zoom 4 roughly x=2..4, y=5..6
-                    for (let x = 2; x <= 5; x++) {
-                        for (let y = 5; y <= 7; y++) {
-                            loadTilePlane(4, x, y);
-                        }
-                    }
-
-                    this.map = map;
-                    this.renderer = new THREE.WebGLRenderer({
-                        canvas: map.getCanvas(),
-                        context: gl,
-                        antialias: true
+                    
+                    features.push({
+                        type: "Feature",
+                        properties: {
+                            level: contour.value // 0.1, 0.4, 0.7
+                        },
+                        geometry: geometry
                     });
-                    this.renderer.autoClear = false;
-                },
-                render: function(gl, matrix) {
-                    const m = new THREE.Matrix4().fromArray(matrix);
-                    this.camera.projectionMatrix = m;
-                    this.renderer.resetState();
-                    this.renderer.render(this.scene, this.camera);
-                    this.map.triggerRepaint();
-                }
-            };
+                });
 
-            map.addLayer(customLayer);
+                if (features.length === 0) return;
+
+                const sourceId = `radar-vec-${z}-${x}-${y}`;
+                
+                if (!map.getSource(sourceId)) {
+                    map.addSource(sourceId, {
+                        type: 'geojson',
+                        data: {
+                            type: "FeatureCollection",
+                            features: features
+                        }
+                    });
+
+                    // Shadow Layer (Ground)
+                    map.addLayer({
+                        id: `${sourceId}-shadow`,
+                        type: 'fill',
+                        source: sourceId,
+                        paint: {
+                            'fill-color': '#000000',
+                            'fill-opacity': 0.4,
+                            'fill-antialias': false
+                        }
+                    }); // Add shadow first so it's below
+
+                    // Floating Vector Layer
+                    map.addLayer({
+                        id: `${sourceId}-fill`,
+                        type: 'fill-extrusion',
+                        source: sourceId,
+                        paint: {
+                            'fill-extrusion-color': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'level'],
+                                0.1, '#00ff00', // Green
+                                0.4, '#ffff00', // Yellow
+                                0.7, '#ff0000'  // Red
+                            ],
+                            'fill-extrusion-height': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'level'],
+                                0.1, 18050, // Green: Low
+                                0.4, 18100, // Yellow: Medium
+                                0.7, 18150  // Red: High
+                            ],
+                            'fill-extrusion-base': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'level'],
+                                0.1, 18000, // Green sits on bottom
+                                0.4, 18050, // Yellow sits on Green
+                                0.7, 18100  // Red sits on Yellow
+                            ],
+                            'fill-extrusion-opacity': 0.9
+                        }
+                    });
+                }
+            }
+
+            // Load a few tiles for demo (US Central)
+            // Z:4 X:3 Y:6
+            const tilesToLoad = [
+                {z:4, x:3, y:6},
+                {z:4, x:4, y:6},
+                {z:4, x:3, y:5},
+                {z:4, x:4, y:5}
+            ];
+            
+            tilesToLoad.forEach(t => vectorizeRadar(t.z, t.x, t.y));
+
+            // Toggle Logic
+            document.getElementById('radarToggle').addEventListener('change', (e) => {
+                const visibility = e.target.checked ? 'visible' : 'none';
+                
+                // Toggle all radar layers
+                const style = map.getStyle();
+                if (style && style.layers) {
+                    style.layers.forEach(layer => {
+                        if (layer.id.includes('radar-vec-')) {
+                            map.setLayoutProperty(layer.id, 'visibility', visibility);
+                        }
+                    });
+                }
+            });
         });
     </script>
 </body>
