@@ -25,6 +25,7 @@
         <br>
         <label>
             Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
+            <button id="playPauseBtn" style="cursor: pointer; padding: 2px 5px;">Pause</button>
             <span id="timeLabel">Loading...</span>
         </label>
     </div>
@@ -38,8 +39,8 @@
             container: 'map',
             style: 'mapbox://styles/evandapplegate/clxz2cnql006d01qj7ipr447c',
             projection: 'globe',
-            center: [-104.9903, 39.7392], // Denver
-            zoom: 8,
+            center: [-112.0841, 38.7725], // Richfield, UT
+            zoom: 6,
             pitch: 45
         });
 
@@ -150,11 +151,14 @@
 
             // Vectorizer
             async function vectorizeRadarRegion(z, minX, maxX, minY, maxY, timestamp) {
-                const cacheKey = timestamp || 'latest';
-                if (radarCache[cacheKey]) {
-                    updateMapSource(radarCache[cacheKey]);
-                    return;
-                }
+                isFetching = true;
+                try {
+                    const cacheKey = timestamp || 'latest';
+                    if (radarCache[cacheKey]) {
+                        updateMapSource(radarCache[cacheKey]);
+                        isFetching = false;
+                        return;
+                    }
 
                 const tilesX = maxX - minX + 1;
                 const tilesY = maxY - minY + 1;
@@ -291,6 +295,9 @@
                 const geojson = { type: "FeatureCollection", features: features };
                 radarCache[cacheKey] = geojson;
                 updateMapSource(geojson);
+                } finally {
+                    isFetching = false;
+                }
             }
 
             // Init Data
@@ -299,24 +306,85 @@
                     const res = await fetch('https://api.rainviewer.com/public/weather-maps.json');
                     const data = await res.json();
                     
-                    if (data.host) radarHost = data.host; // e.g. https://tilecache.rainviewer.com
+                    if (data.host) radarHost = data.host;
 
                     if (data.radar && data.radar.past) {
-                        radarTimestamps = data.radar.past.map(i => i.time);
-                        // Add nowcast? Optional. For now just past.
+                        // Get latest timestamp from API to ensure sync
+                        const past = data.radar.past;
+                        const latestInfo = past[past.length - 1];
+                        const latestTime = latestInfo.time;
+
+                        // Generate timestamps for last 6 hours (10 min intervals) to avoid 429s
+                        radarTimestamps = [];
+                        const interval = 600; // 10 mins
+                        const count = (6 * 60 * 60) / interval; // 36 steps
+                        
+                        for (let i = 0; i < count; i++) {
+                            radarTimestamps.unshift(latestTime - (i * interval));
+                        }
                         
                         const slider = document.getElementById('timeSlider');
                         slider.max = radarTimestamps.length - 1;
-                        slider.value = radarTimestamps.length - 1;
                         
-                        const latest = radarTimestamps[radarTimestamps.length - 1];
-                        updateTimeLabel(latest);
-                        vectorizeRadarRegion(4, 2, 5, 5, 7, latest);
+                        // Start Animation loop
+                        playAnimation();
                     }
                 } catch (e) {
                     console.error("RainViewer API Error", e);
                 }
             }
+
+            let animationTimer;
+            let isFetching = false;
+            const playPauseBtn = document.getElementById('playPauseBtn');
+
+            function playAnimation() {
+                playPauseBtn.innerText = "Pause";
+                const slider = document.getElementById('timeSlider');
+                let index = parseInt(slider.value);
+                
+                // Recursive loop to prevent overlapping requests
+                const loop = async () => {
+                    if (isFetching) {
+                        animationTimer = setTimeout(loop, 500);
+                        return;
+                    }
+
+                    index++;
+                    if (index >= radarTimestamps.length) index = 0;
+                    
+                    slider.value = index;
+                    const ts = radarTimestamps[index];
+                    updateTimeLabel(ts);
+                    
+                    // Wait for fetch to complete
+                    try {
+                        await vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                    } catch (e) {
+                        console.warn("Frame skipped", e);
+                    }
+                    
+                    animationTimer = setTimeout(loop, 500); // 500ms delay between frames
+                };
+                
+                loop();
+            }
+
+            function stopAnimation() {
+                playPauseBtn.innerText = "Play";
+                if (animationTimer) {
+                    clearTimeout(animationTimer);
+                    animationTimer = null;
+                }
+            }
+
+            playPauseBtn.addEventListener('click', () => {
+                if (animationTimer) {
+                    stopAnimation();
+                } else {
+                    playAnimation();
+                }
+            });
 
             function updateTimeLabel(ts) {
                 const date = new Date(ts * 1000);
@@ -326,12 +394,18 @@
             }
 
             // Slider Listener
+            let sliderDebounce;
             document.getElementById('timeSlider').addEventListener('input', (e) => {
+                stopAnimation(); // Stop auto-play on user interaction
                 const index = parseInt(e.target.value);
                 if (radarTimestamps[index]) {
                     const ts = radarTimestamps[index];
                     updateTimeLabel(ts);
-                    vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                    
+                    if (sliderDebounce) clearTimeout(sliderDebounce);
+                    sliderDebounce = setTimeout(() => {
+                        vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                    }, 150); // 150ms debounce
                 }
             });
 
@@ -357,3 +431,4 @@
     </script>
 </body>
 </html>
+
