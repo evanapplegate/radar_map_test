@@ -20,6 +20,10 @@
         </label>
         <br>
         <label>
+            <input type="checkbox" id="topoToggle"> Topo Lines
+        </label>
+        <br>
+        <label>
             Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
         </label>
         <br>
@@ -67,6 +71,151 @@
                 'maxzoom': 14
             });
             map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+
+            // --- Topo Lines (Vector High Zoom) ---
+            map.addSource('mapbox-terrain-vec', {
+                type: 'vector',
+                url: 'mapbox://mapbox.mapbox-terrain-v2'
+            });
+
+            map.addLayer({
+                'id': 'contour-lines-high',
+                'type': 'line',
+                'source': 'mapbox-terrain-vec',
+                'source-layer': 'contour',
+                'minzoom': 10,
+                'layout': { 'visibility': 'none', 'line-join': 'round', 'line-cap': 'round' },
+                'paint': { 
+                    'line-color': '#FF9914', 
+                    'line-width': 2, 
+                    'line-opacity': 0.3 
+                },
+                'filter': ['all', ['==', ['%', ['get', 'ele'], 100], 0]] // Show only 100m intervals (fewer lines)
+            });
+
+            // --- Topo Lines (Client-side Low Zoom) ---
+            function updateTerrainContours() {
+                if (!document.getElementById('topoToggle').checked) return;
+                
+                const bounds = map.getBounds();
+                const z = 7; // Higher resolution (was 5) for less generalization
+                // Calculate tile range for current view at z7
+                // Simple approximation
+                const minX = Math.floor((bounds.getWest() + 180) / 360 * Math.pow(2, z));
+                const maxX = Math.floor((bounds.getEast() + 180) / 360 * Math.pow(2, z));
+                const minY = Math.floor((1 - Math.log(Math.tan(bounds.getNorth() * Math.PI / 180) + 1 / Math.cos(bounds.getNorth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+                const maxY = Math.floor((1 - Math.log(Math.tan(bounds.getSouth() * Math.PI / 180) + 1 / Math.cos(bounds.getSouth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+
+                generateTerrainContours(z, minX, maxX, minY, maxY);
+            }
+
+            async function generateTerrainContours(z, minX, maxX, minY, maxY) {
+                 // Limit range to prevent massive fetches
+                 if ((maxX - minX) * (maxY - minY) > 16) return;
+
+                 const tileW = 256;
+                 const tilesX = maxX - minX + 1;
+                 const tilesY = maxY - minY + 1;
+                 const totalW = tilesX * tileW;
+                 const totalH = tilesY * tileW;
+
+                 const canvas = document.createElement('canvas');
+                 canvas.width = totalW;
+                 canvas.height = totalH;
+                 const ctx = canvas.getContext('2d');
+                 
+                 const promises = [];
+                 for (let y = minY; y <= maxY; y++) {
+                    for (let x = minX; x <= maxX; x++) {
+                        promises.push(new Promise((resolve) => {
+                            const img = new Image();
+                            img.crossOrigin = "Anonymous";
+                            img.onload = () => {
+                                ctx.drawImage(img, (x - minX) * tileW, (y - minY) * tileW, tileW, tileW);
+                                resolve();
+                            };
+                            img.onerror = resolve;
+                            // Mapbox Terrain-RGB
+                            img.src = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${z}/${x}/${y}.pngraw?access_token=${mapboxgl.accessToken}`;
+                        }));
+                    }
+                 }
+                 
+                 await Promise.all(promises);
+                 
+                 const imgData = ctx.getImageData(0, 0, totalW, totalH);
+                 const data = imgData.data;
+                 const elevations = new Float64Array(totalW * totalH);
+                 
+                 // Decode Mapbox Terrain-RGB: -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
+                 for (let i = 0; i < data.length; i += 4) {
+                     const r = data[i];
+                     const g = data[i+1];
+                     const b = data[i+2];
+                     const h = -10000 + ((r * 256 * 256 + g * 256 + b) * 0.1);
+                     elevations[i/4] = h;
+                 }
+
+                 // Generate Contours every 200m (more lines at low zoom)
+                 const thresholds = d3.range(0, 5000, 200); 
+                 const contours = d3.contours().size([totalW, totalH]).thresholds(thresholds)(elevations);
+                 
+                 // Projection Logic (Same as radar)
+                 const n = Math.pow(2, z);
+                 const lon1 = minX / n * 360 - 180; 
+                 const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
+                 const lat1 = latRad1 * 180 / Math.PI;
+                 const lon2 = (maxX + 1) / n * 360 - 180;
+                 const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
+                 const lat2 = latRad2 * 180 / Math.PI;
+                 const latDiff = lat2 - lat1;
+                 const lonDiff = lon2 - lon1;
+
+                 const features = [];
+                 contours.forEach(contour => {
+                    if (!contour.coordinates.length) return;
+                    const geometry = {
+                        type: "MultiPolygon", // Contours are MultiPolygons, usually rendered as lines
+                        coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
+                            const mappedRing = ring.map(([px, py]) => {
+                                const normX = (px) / totalW;
+                                const normY = (py) / totalH;
+                                const lon = lon1 + normX * lonDiff;
+                                const lat = lat1 + normY * latDiff;
+                                return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+                            });
+                            return mappedRing;
+                        }))
+                    };
+                    // Convert Polygon to LineString for display
+                     geometry.coordinates.forEach(polygon => {
+                         polygon.forEach(ring => {
+                             features.push({ type: "Feature", properties: { ele: contour.value }, geometry: { type: "LineString", coordinates: ring } });
+                         });
+                     });
+                 });
+
+                 const geojson = { type: "FeatureCollection", features: features };
+                 
+                 if (map.getSource('contour-lines-low-source')) {
+                     map.getSource('contour-lines-low-source').setData(geojson);
+                 } else {
+                     map.addSource('contour-lines-low-source', { type: 'geojson', data: geojson });
+                     map.addLayer({
+                         'id': 'contour-lines-low',
+                         'type': 'line',
+                         'source': 'contour-lines-low-source',
+                         'maxzoom': 10,
+                         'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
+                         'paint': { 'line-color': '#FF9914', 'line-width': 1, 'line-opacity': 0.3 }
+                     });
+                 }
+            }
+
+            map.on('moveend', () => {
+                if(map.getZoom() < 10) updateTerrainContours();
+            });
+
 
             const radarCache = {};
 
@@ -415,6 +564,14 @@
                 ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
                     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
                 });
+            });
+
+            // Topo Toggle
+            document.getElementById('topoToggle').addEventListener('change', (e) => {
+                const visibility = e.target.checked ? 'visible' : 'none';
+                if (map.getLayer('contour-lines-high')) map.setLayoutProperty('contour-lines-high', 'visibility', visibility);
+                if (map.getLayer('contour-lines-low')) map.setLayoutProperty('contour-lines-low', 'visibility', visibility);
+                if (e.target.checked && map.getZoom() < 10) updateTerrainContours();
             });
 
             // Opacity
