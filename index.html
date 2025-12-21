@@ -8,599 +8,734 @@
     <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.css' rel='stylesheet' />
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
-        body { margin: 0; padding: 0; }
-        #map { width: 100vw; height: 100vh; }
+        body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+        .map-container { width: 100%; height: 50%; position: relative; border-bottom: 1px solid #ccc; }
+        #mapTop { width: 100%; height: 100%; }
+        #mapBottom { width: 100%; height: 100%; }
+        
+        /* Hide logo and attribution as requested */
+        .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display: none !important; }
+
+        /* Controls Panel */
+        #controls {
+            position: absolute; 
+            top: 10px; 
+            left: 10px; 
+            z-index: 100; 
+            background: white; 
+            padding: 10px; 
+            font-family: sans-serif;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        #controls.collapsed {
+            padding: 5px;
+            background: transparent;
+            box-shadow: none;
+        }
+        #controls-content {
+            display: block;
+        }
+        #controls-toggle {
+            cursor: pointer;
+            font-weight: bold;
+            margin-bottom: 5px;
+            user-select: none;
+        }
+        #controls.collapsed #controls-content {
+            display: none;
+        }
+        #controls.collapsed #controls-toggle {
+            font-size: 0; /* Hide text */
+            width: 0;
+            height: 0;
+            border-left: 10px solid transparent;
+            border-right: 10px solid transparent;
+            border-top: 10px solid black;
+            margin: 0;
+        }
     </style>
 </head>
 <body>
-    <div id="map"></div>
-    <div style="position: absolute; top: 10px; left: 10px; z-index: 100; background: white; padding: 10px; font-family: sans-serif;">
-        <label>
-            <input type="checkbox" id="radarToggle" checked> Radar
-        </label>
-        <br>
-        <label>
-            <input type="checkbox" id="topoToggle"> Topo Lines
-        </label>
-        <br>
-        <label>
-            Topo Opacity: <input type="range" id="topoOpacity" min="0" max="1" step="0.1" value="0.3">
-        </label>
-        <br>
-        <label>
-            Radar Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
-        </label>
-        <br>
-        <label>
-            Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
-            <button id="playPauseBtn" style="cursor: pointer; padding: 2px 5px;">Pause</button>
-            <span id="timeLabel">Loading...</span>
-        </label>
+    <div class="map-container">
+        <div id="mapTop"></div>
+        <div id="controls">
+            <div id="controls-toggle">▼ Controls</div>
+            <div id="controls-content">
+                <label>
+                    <input type="checkbox" id="radarToggle" checked> Radar
+                </label>
+                <br>
+                <label>
+                    <input type="checkbox" id="topoToggle"> Topo Lines
+                </label>
+                <br>
+                <label>
+                    Topo Opacity: <input type="range" id="topoOpacity" min="0" max="1" step="0.1" value="0.3">
+                </label>
+                <br>
+                <label>
+                    Radar Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
+                </label>
+                <br>
+                <label>
+                    Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
+                    <button id="playPauseBtn" style="cursor: pointer; padding: 2px 5px;">Pause</button>
+                    <span id="timeLabel">Loading...</span>
+                </label>
+            </div>
+        </div>
     </div>
+    <div class="map-container" style="border-bottom: none;">
+        <div id="mapBottom"></div>
+    </div>
+
     <script>
         mapboxgl.accessToken = 'pk.eyJ1IjoiZXZhbmRhcHBsZWdhdGUiLCJhIjoiY2tmbzA1cWM1MWozeTM4cXV4eHUwMzFhdiJ9.Z5f9p8jJD_N1MQwycF2NEw';
 
         let radarTimestamps = [];
         let radarHost = 'https://tilecache.rainviewer.com'; // Default, will update from API
+        const initialCenter = [-112.0841, 38.7725]; // Richfield, UT
+        const initialZoom = 6;
+        const initialPitch = 45;
 
-        const map = new mapboxgl.Map({
-            container: 'map',
+        // --- Initialize Maps ---
+        const mapOptions = {
             style: 'mapbox://styles/evandapplegate/clxz2cnql006d01qj7ipr447c',
             projection: 'globe',
-            center: [-112.0841, 38.7725], // Richfield, UT
-            zoom: 6,
-            pitch: 45
+            center: initialCenter,
+            zoom: initialZoom,
+            pitch: initialPitch,
+            attributionControl: false // Remove attribution as requested
+        };
+
+        const mapTop = new mapboxgl.Map({
+            container: 'mapTop',
+            ...mapOptions,
+            style: {
+                version: 8,
+                sources: {
+                    'mapbox-dem': {
+                        'type': 'raster-dem',
+                        'url': 'mapbox://mapbox.terrain-rgb',
+                        'tileSize': 512,
+                        'maxzoom': 14
+                    }
+                },
+                layers: [
+                    {
+                        'id': 'background',
+                        'type': 'background',
+                        'paint': {
+                            'background-color': '#ffffff'
+                        }
+                    }
+                ],
+                terrain: {
+                    source: 'mapbox-dem',
+                    exaggeration: 1.5
+                }
+            }
         });
 
-        map.addControl(new mapboxgl.NavigationControl());
+        const mapBottom = new mapboxgl.Map({
+            container: 'mapBottom',
+            ...mapOptions
+        });
 
-        map.on('load', () => {
-            // Load Pattern
-            map.loadImage('pattern1.png', (error, image) => {
-                if (error) return; // pattern might be missing
-                const w = image.width * 0.25;
-                const h = image.height * 0.25;
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(image, 0, 0, w, h);
-                map.addImage('radar-pattern', ctx.getImageData(0, 0, w, h));
+        // Sync logic
+        let activeSyncMap = null;
+
+        function syncMap(source, target, mapName) {
+            if (activeSyncMap && activeSyncMap !== mapName) return;
+            activeSyncMap = mapName;
+            
+            const center = source.getCenter();
+            const zoom = source.getZoom();
+            const bearing = source.getBearing();
+            const pitch = source.getPitch();
+
+            target.jumpTo({
+                center: center,
+                zoom: zoom,
+                bearing: bearing,
+                pitch: pitch,
+                duration: 0
+            });
+        }
+        
+        function clearSync(mapName) {
+            if (activeSyncMap === mapName) activeSyncMap = null;
+        }
+
+        mapTop.on('move', () => syncMap(mapTop, mapBottom, 'top'));
+        mapTop.on('moveend', () => clearSync('top'));
+
+        mapBottom.on('move', () => syncMap(mapBottom, mapTop, 'bottom'));
+        mapBottom.on('moveend', () => clearSync('bottom'));
+
+        // Controls Toggle
+        const controlsDiv = document.getElementById('controls');
+        const controlsToggle = document.getElementById('controls-toggle');
+        controlsToggle.addEventListener('click', () => {
+            controlsDiv.classList.toggle('collapsed');
+            controlsToggle.innerText = controlsDiv.classList.contains('collapsed') ? '▲ Controls' : '▼ Controls';
+        });
+
+
+        // Common Setup Function
+        function setupMap(mapInstance, isTop) {
+            mapInstance.on('load', () => {
+                // Terrain Source - ALREADY ADDED IN STYLE FOR TOP MAP, BUT SAFE TO RE-ADD/OVERWRITE OR SKIP
+                if (!mapInstance.getSource('mapbox-dem')) {
+                    mapInstance.addSource('mapbox-dem', {
+                        'type': 'raster-dem',
+                        'url': 'mapbox://mapbox.terrain-rgb',
+                        'tileSize': 512,
+                        'maxzoom': 14
+                    });
+                    mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+                }
+
+                // --- Topo Lines (Vector High Zoom) ---
+                mapInstance.addSource('mapbox-terrain-vec', {
+                    type: 'vector',
+                    url: 'mapbox://mapbox.mapbox-terrain-v2'
+                });
+
+                mapInstance.addLayer({
+                    'id': 'contour-lines-high',
+                    'type': 'line',
+                    'source': 'mapbox-terrain-vec',
+                    'source-layer': 'contour',
+                    'minzoom': 10,
+                    'layout': { 'visibility': 'none', 'line-join': 'round', 'line-cap': 'round' },
+                    'paint': { 
+                        'line-color': '#ff4e00', 
+                        'line-width': .75, 
+                        'line-opacity': 0.3 
+                    },
+                    'filter': ['all', ['==', ['%', ['get', 'ele'], 100], 0]]
+                });
+
+                // Load Pattern (only needed for top map radar really, but safe to load)
+                if (isTop) {
+                    mapInstance.loadImage('pattern1.png', (error, image) => {
+                        if (error) return; 
+                        const w = image.width * 0.25;
+                        const h = image.height * 0.25;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = w;
+                        canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(image, 0, 0, w, h);
+                        mapInstance.addImage('radar-pattern', ctx.getImageData(0, 0, w, h));
+                    });
+                }
             });
 
-            map.addSource('mapbox-dem', {
-                'type': 'raster-dem',
-                'url': 'mapbox://mapbox.terrain-rgb',
-                'tileSize': 512,
-                'maxzoom': 14
+             mapInstance.on('moveend', () => {
+                if(mapInstance.getZoom() < 10) updateTerrainContours(mapInstance);
             });
-            map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+        }
 
-            // --- Topo Lines (Vector High Zoom) ---
-            map.addSource('mapbox-terrain-vec', {
-                type: 'vector',
-                url: 'mapbox://mapbox.mapbox-terrain-v2'
-            });
+        setupMap(mapTop, true);
+        setupMap(mapBottom, false);
 
-            map.addLayer({
-                'id': 'contour-lines-high',
-                'type': 'line',
-                'source': 'mapbox-terrain-vec',
-                'source-layer': 'contour',
-                'minzoom': 10,
-                'layout': { 'visibility': 'none', 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 
-                    'line-color': '#ff4e00', 
-                    'line-width': .75, 
-                    'line-opacity': 0.3 
-                },
-                'filter': ['all', ['==', ['%', ['get', 'ele'], 100], 0]] // Show only 100m intervals (fewer lines)
-            });
 
-            // --- Topo Lines (Client-side Low Zoom) ---
-            function updateTerrainContours() {
-                if (!document.getElementById('topoToggle').checked) return;
-                
-                const bounds = map.getBounds();
-                const z = 7; // Higher resolution (was 5) for less generalization
-                // Calculate tile range for current view at z7
-                // Simple approximation
-                const minX = Math.floor((bounds.getWest() + 180) / 360 * Math.pow(2, z));
-                const maxX = Math.floor((bounds.getEast() + 180) / 360 * Math.pow(2, z));
-                const minY = Math.floor((1 - Math.log(Math.tan(bounds.getNorth() * Math.PI / 180) + 1 / Math.cos(bounds.getNorth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
-                const maxY = Math.floor((1 - Math.log(Math.tan(bounds.getSouth() * Math.PI / 180) + 1 / Math.cos(bounds.getSouth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+        // --- Topo Lines (Client-side Low Zoom) ---
+        // Refactored to accept map instance
+        function updateTerrainContours(targetMap) {
+            if (!document.getElementById('topoToggle').checked) return;
+            
+            const bounds = targetMap.getBounds();
+            const z = 7; 
+            const minX = Math.floor((bounds.getWest() + 180) / 360 * Math.pow(2, z));
+            const maxX = Math.floor((bounds.getEast() + 180) / 360 * Math.pow(2, z));
+            const minY = Math.floor((1 - Math.log(Math.tan(bounds.getNorth() * Math.PI / 180) + 1 / Math.cos(bounds.getNorth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+            const maxY = Math.floor((1 - Math.log(Math.tan(bounds.getSouth() * Math.PI / 180) + 1 / Math.cos(bounds.getSouth() * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
 
-                generateTerrainContours(z, minX, maxX, minY, maxY);
-            }
+            generateTerrainContours(targetMap, z, minX, maxX, minY, maxY);
+        }
 
-            async function generateTerrainContours(z, minX, maxX, minY, maxY) {
-                 // Limit range to prevent massive fetches
-                 if ((maxX - minX) * (maxY - minY) > 16) return;
+        async function generateTerrainContours(targetMap, z, minX, maxX, minY, maxY) {
+             if ((maxX - minX) * (maxY - minY) > 16) return;
 
-                 const tileW = 256;
-                 const tilesX = maxX - minX + 1;
-                 const tilesY = maxY - minY + 1;
-                 const totalW = tilesX * tileW;
-                 const totalH = tilesY * tileW;
+             const tileW = 256;
+             const tilesX = maxX - minX + 1;
+             const tilesY = maxY - minY + 1;
+             const totalW = tilesX * tileW;
+             const totalH = tilesY * tileW;
 
-                 const canvas = document.createElement('canvas');
-                 canvas.width = totalW;
-                 canvas.height = totalH;
-                 const ctx = canvas.getContext('2d');
-                 
-                 const promises = [];
-                 for (let y = minY; y <= maxY; y++) {
-                    for (let x = minX; x <= maxX; x++) {
-                        promises.push(new Promise((resolve) => {
-                            const img = new Image();
-                            img.crossOrigin = "Anonymous";
-                            img.onload = () => {
-                                ctx.drawImage(img, (x - minX) * tileW, (y - minY) * tileW, tileW, tileW);
-                                resolve();
-                            };
-                            img.onerror = resolve;
-                            // Mapbox Terrain-RGB
-                            img.src = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${z}/${x}/${y}.pngraw?access_token=${mapboxgl.accessToken}`;
-                        }));
-                    }
-                 }
-                 
-                 await Promise.all(promises);
-                 
-                 const imgData = ctx.getImageData(0, 0, totalW, totalH);
-                 const data = imgData.data;
-                 const elevations = new Float64Array(totalW * totalH);
-                 
-                 // Decode Mapbox Terrain-RGB: -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-                 for (let i = 0; i < data.length; i += 4) {
-                     const r = data[i];
-                     const g = data[i+1];
-                     const b = data[i+2];
-                     const h = -10000 + ((r * 256 * 256 + g * 256 + b) * 0.1);
-                     elevations[i/4] = h;
-                 }
+             const canvas = document.createElement('canvas');
+             canvas.width = totalW;
+             canvas.height = totalH;
+             const ctx = canvas.getContext('2d');
+             
+             const promises = [];
+             for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    promises.push(new Promise((resolve) => {
+                        const img = new Image();
+                        img.crossOrigin = "Anonymous";
+                        img.onload = () => {
+                            ctx.drawImage(img, (x - minX) * tileW, (y - minY) * tileW, tileW, tileW);
+                            resolve();
+                        };
+                        img.onerror = resolve;
+                        img.src = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${z}/${x}/${y}.pngraw?access_token=${mapboxgl.accessToken}`;
+                    }));
+                }
+             }
+             
+             await Promise.all(promises);
+             
+             const imgData = ctx.getImageData(0, 0, totalW, totalH);
+             const data = imgData.data;
+             const elevations = new Float64Array(totalW * totalH);
+             
+             for (let i = 0; i < data.length; i += 4) {
+                 const r = data[i];
+                 const g = data[i+1];
+                 const b = data[i+2];
+                 const h = -10000 + ((r * 256 * 256 + g * 256 + b) * 0.1);
+                 elevations[i/4] = h;
+             }
 
-                 // Generate Contours every 200m (more lines at low zoom)
-                 const thresholds = d3.range(0, 5000, 200); 
-                 const contours = d3.contours().size([totalW, totalH]).thresholds(thresholds)(elevations);
-                 
-                 // Projection Logic (Same as radar)
-                 const n = Math.pow(2, z);
-                 const lon1 = minX / n * 360 - 180; 
-                 const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
-                 const lat1 = latRad1 * 180 / Math.PI;
-                 const lon2 = (maxX + 1) / n * 360 - 180;
-                 const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
-                 const lat2 = latRad2 * 180 / Math.PI;
-                 const latDiff = lat2 - lat1;
-                 const lonDiff = lon2 - lon1;
+             const thresholds = d3.range(0, 5000, 200); 
+             const contours = d3.contours().size([totalW, totalH]).thresholds(thresholds)(elevations);
+             
+             const n = Math.pow(2, z);
+             const lon1 = minX / n * 360 - 180; 
+             const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
+             const lat1 = latRad1 * 180 / Math.PI;
+             const lon2 = (maxX + 1) / n * 360 - 180;
+             const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
+             const lat2 = latRad2 * 180 / Math.PI;
+             const latDiff = lat2 - lat1;
+             const lonDiff = lon2 - lon1;
 
-                 const features = [];
-                 contours.forEach(contour => {
-                    if (!contour.coordinates.length) return;
-                    const geometry = {
-                        type: "MultiPolygon", // Contours are MultiPolygons, usually rendered as lines
-                        coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
-                            const mappedRing = ring.map(([px, py]) => {
-                                const normX = (px) / totalW;
-                                const normY = (py) / totalH;
-                                const lon = lon1 + normX * lonDiff;
-                                const lat = lat1 + normY * latDiff;
-                                return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
-                            });
-                            return mappedRing;
-                        }))
-                    };
-                    // Convert Polygon to LineString for display
-                     geometry.coordinates.forEach(polygon => {
-                         polygon.forEach(ring => {
-                             features.push({ type: "Feature", properties: { ele: contour.value }, geometry: { type: "LineString", coordinates: ring } });
-                         });
+             const features = [];
+             contours.forEach(contour => {
+                if (!contour.coordinates.length) return;
+                const geometry = {
+                    type: "MultiPolygon", 
+                    coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
+                        const mappedRing = ring.map(([px, py]) => {
+                            const normX = (px) / totalW;
+                            const normY = (py) / totalH;
+                            const lon = lon1 + normX * lonDiff;
+                            const lat = lat1 + normY * latDiff;
+                            return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+                        });
+                        return mappedRing;
+                    }))
+                };
+                 geometry.coordinates.forEach(polygon => {
+                     polygon.forEach(ring => {
+                         features.push({ type: "Feature", properties: { ele: contour.value }, geometry: { type: "LineString", coordinates: ring } });
                      });
                  });
+             });
 
-                 const geojson = { type: "FeatureCollection", features: features };
-                 
-                 if (map.getSource('contour-lines-low-source')) {
-                     map.getSource('contour-lines-low-source').setData(geojson);
-                 } else {
-                     map.addSource('contour-lines-low-source', { type: 'geojson', data: geojson });
-                     map.addLayer({
-                         'id': 'contour-lines-low',
-                         'type': 'line',
-                         'source': 'contour-lines-low-source',
-                         'maxzoom': 10,
-                         'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
-                         'paint': { 'line-color': '#ff4e00', 'line-width': .75, 'line-opacity': 0.3 }
-                     });
-                 }
+             const geojson = { type: "FeatureCollection", features: features };
+             
+             if (targetMap.getSource('contour-lines-low-source')) {
+                 targetMap.getSource('contour-lines-low-source').setData(geojson);
+             } else {
+                 targetMap.addSource('contour-lines-low-source', { type: 'geojson', data: geojson });
+                 targetMap.addLayer({
+                     'id': 'contour-lines-low',
+                     'type': 'line',
+                     'source': 'contour-lines-low-source',
+                     'maxzoom': 10,
+                     'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
+                     'paint': { 'line-color': '#ff4e00', 'line-width': .75, 'line-opacity': 0.3 }
+                 });
+             }
+        }
+
+
+        const radarCache = {};
+
+        // Helper to update map source - ONLY FOR TOP MAP
+        function updateMapSource(geojson) {
+            const sourceId = 'radar-conus';
+            
+            if (mapTop.getSource(sourceId)) {
+                mapTop.getSource(sourceId).setData(geojson);
+            } else {
+                mapTop.addSource(sourceId, {
+                    type: 'geojson',
+                    data: geojson
+                });
+
+                // Shadow
+                mapTop.addLayer({
+                    id: `${sourceId}-shadow`,
+                    type: 'fill',
+                    source: sourceId,
+                    paint: {
+                        'fill-color': '#000000',
+                        'fill-opacity': 0.16,
+                        'fill-antialias': false
+                    }
+                });
+
+                // Fill Extrusion
+                mapTop.addLayer({
+                    id: `${sourceId}-fill`,
+                    type: 'fill-extrusion',
+                    source: sourceId,
+                    paint: {
+                        'fill-extrusion-color': [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'level'],
+                            0.08, '#5d2c00',
+                            0.2, '#9e4a00',
+                            0.4, '#ff7800',
+                            0.6, '#ff4e00'
+                        ],
+                        'fill-extrusion-height': [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'level'],
+                            0.08, 18100, 
+                            0.2, 24000, 
+                            0.4, 29000, 
+                            0.6, 34000
+                        ],
+                        'fill-extrusion-base': [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'level'],
+                            0.08, 18000,
+                            0.2, 18200,
+                            0.4, 18400,
+                            0.6, 18600
+                        ],
+                        'fill-extrusion-opacity': 0.4
+                    }
+                });
+
+                // Pattern
+                mapTop.addLayer({
+                    id: `${sourceId}-pattern`,
+                    type: 'fill-extrusion',
+                    source: sourceId,
+                    paint: {
+                        'fill-extrusion-pattern': 'radar-pattern',
+                        'fill-extrusion-height': [
+                            'interpolate', ['linear'], ['get', 'level'],
+                            0.08, 18100, 0.2, 24000, 0.4, 29000, 0.6, 34000
+                        ],
+                        'fill-extrusion-base': [
+                            'interpolate', ['linear'], ['get', 'level'],
+                            0.08, 18000, 0.2, 18200, 0.4, 18400, 0.6, 18600
+                        ],
+                        'fill-extrusion-opacity': 0.05
+                    }
+                });
             }
+        }
 
-            map.on('moveend', () => {
-                if(map.getZoom() < 10) updateTerrainContours();
-            });
-
-
-            const radarCache = {};
-
-            // Helper to update map source
-            function updateMapSource(geojson) {
-                const sourceId = 'radar-conus';
-                
-                if (map.getSource(sourceId)) {
-                    map.getSource(sourceId).setData(geojson);
-                } else {
-                    map.addSource(sourceId, {
-                        type: 'geojson',
-                        data: geojson
-                    });
-
-                    // Shadow
-                    map.addLayer({
-                        id: `${sourceId}-shadow`,
-                        type: 'fill',
-                        source: sourceId,
-                        paint: {
-                            'fill-color': '#000000',
-                            'fill-opacity': 0.16, // 0.4 * 0.4
-                            'fill-antialias': false
-                        }
-                    });
-
-                    // Fill Extrusion
-                    map.addLayer({
-                        id: `${sourceId}-fill`,
-                        type: 'fill-extrusion',
-                        source: sourceId,
-                        paint: {
-                            'fill-extrusion-color': [
-                                'interpolate',
-                                ['linear'],
-                                ['get', 'level'],
-                                0.08, '#5d2c00',
-                                0.2, '#9e4a00',
-                                0.4, '#ff7800',
-                                0.6, '#ff4e00'
-                            ],
-                            'fill-extrusion-height': [
-                                'interpolate',
-                                ['linear'],
-                                ['get', 'level'],
-                                0.08, 18100, // 100m thickness (kept)
-                                0.2, 24000,  // 3800m thickness (doubled from 1900)
-                                0.4, 29000,  // 5400m thickness (doubled from 2700)
-                                0.6, 34000   // 10800m thickness (doubled from 5400)
-                            ],
-                            'fill-extrusion-base': [
-                                'interpolate',
-                                ['linear'],
-                                ['get', 'level'],
-                                0.08, 18000,
-                                0.2, 18200,
-                                0.4, 18400,
-                                0.6, 18600
-                            ],
-                            'fill-extrusion-opacity': 0.4
-                        }
-                    });
-
-                    // Pattern
-                    map.addLayer({
-                        id: `${sourceId}-pattern`,
-                        type: 'fill-extrusion',
-                        source: sourceId,
-                        paint: {
-                            'fill-extrusion-pattern': 'radar-pattern',
-                            'fill-extrusion-height': [
-                                'interpolate', ['linear'], ['get', 'level'],
-                                0.08, 18100, 0.2, 24000, 0.4, 29000, 0.6, 34000
-                            ],
-                            'fill-extrusion-base': [
-                                'interpolate', ['linear'], ['get', 'level'],
-                                0.08, 18000, 0.2, 18200, 0.4, 18400, 0.6, 18600
-                            ],
-                            'fill-extrusion-opacity': 0.05
-                        }
-                    });
-                }
-            }
-
-            // Vectorizer
-            async function vectorizeRadarRegion(z, minX, maxX, minY, maxY, timestamp) {
-                isFetching = true;
-                try {
-                    const cacheKey = timestamp || 'latest';
-                    if (radarCache[cacheKey]) {
-                        updateMapSource(radarCache[cacheKey]);
-                        isFetching = false;
-                        return;
-                    }
-
-                const tilesX = maxX - minX + 1;
-                const tilesY = maxY - minY + 1;
-                const tileW = 256;
-                const upscale = 2;
-                const totalW = tilesX * tileW * upscale;
-                const totalH = tilesY * tileW * upscale;
-                
-                const canvas = document.createElement('canvas');
-                canvas.width = totalW;
-                canvas.height = totalH;
-                const ctx = canvas.getContext('2d');
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = 'high';
-                
-                const promises = [];
-                for (let y = minY; y <= maxY; y++) {
-                    for (let x = minX; x <= maxX; x++) {
-                        const p = new Promise((resolve) => {
-                            const img = new Image();
-                            img.crossOrigin = "Anonymous";
-                            img.onload = () => {
-                                ctx.drawImage(img, (x - minX) * tileW * upscale, (y - minY) * tileW * upscale, tileW * upscale, tileW * upscale);
-                                resolve();
-                            };
-                            img.onerror = () => resolve();
-                            
-                            if (timestamp) {
-                                // RainViewer URL: {host}/v2/radar/{ts}/{size}/{z}/{x}/{y}/{color}/{options}.png
-                                img.src = `${radarHost}/v2/radar/${timestamp}/256/${z}/${x}/${y}/6/1_1.png`;
-                            } else {
-                                resolve();
-                            }
-                        });
-                        promises.push(p);
-                    }
-                }
-                
-                await Promise.all(promises);
-                
-                const imgData = ctx.getImageData(0, 0, totalW, totalH);
-                const paddedW = totalW + 2;
-                const paddedH = totalH + 2;
-                const rawValues = new Float64Array(paddedW * paddedH).fill(0);
-                
-                let sumIntensity = 0;
-                let maxVal = 0;
-                let minVal = 1.0;
-
-                for (let y = 0; y < totalH; y++) {
-                    for (let x = 0; x < totalW; x++) {
-                        const srcIdx = (y * totalW + x) * 4;
-                        const dstIdx = (y + 1) * paddedW + (x + 1);
-                        const val = imgData.data[srcIdx + 3] / 255.0;
-                        rawValues[dstIdx] = val;
-                        sumIntensity += val;
-                        if (val > maxVal) maxVal = val;
-                        if (val < minVal) minVal = val;
-                    }
-                }
-
-                const avgIntensity = sumIntensity / (totalW * totalH);
-                const range = maxVal - minVal;
-                
-                if ((maxVal > 0 && range < 0.01) || avgIntensity > 0.9) {
-                    console.warn("Discarding tile: Solid/Placeholder", { avg: avgIntensity, range });
-                    const geojson = { type: "FeatureCollection", features: [] };
-                    radarCache[cacheKey] = geojson;
-                    updateMapSource(geojson);
+        // Vectorizer
+        async function vectorizeRadarRegion(z, minX, maxX, minY, maxY, timestamp) {
+            isFetching = true;
+            try {
+                const cacheKey = timestamp || 'latest';
+                if (radarCache[cacheKey]) {
+                    updateMapSource(radarCache[cacheKey]);
+                    isFetching = false;
                     return;
                 }
 
-                // Mild Blur (1 pass, radius 1)
-                let v1 = new Float64Array(rawValues);
-                let v2 = new Float64Array(paddedW * paddedH);
-                const passes = 1;
-                const radius = 1;
-                const diameter = radius * 2 + 1;
-                const divisor = diameter * diameter;
-
-                for (let p = 0; p < passes; p++) {
-                    for (let y = radius; y < paddedH - radius; y++) {
-                        for (let x = radius; x < paddedW - radius; x++) {
-                            let sum = 0;
-                            for (let dy = -radius; dy <= radius; dy++) {
-                                for (let dx = -radius; dx <= radius; dx++) {
-                                    sum += v1[(y + dy) * paddedW + (x + dx)];
-                                }
-                            }
-                            v2[y * paddedW + x] = sum / divisor;
+            const tilesX = maxX - minX + 1;
+            const tilesY = maxY - minY + 1;
+            const tileW = 256;
+            const upscale = 2;
+            const totalW = tilesX * tileW * upscale;
+            const totalH = tilesY * tileW * upscale;
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = totalW;
+            canvas.height = totalH;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            
+            const promises = [];
+            for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    const p = new Promise((resolve) => {
+                        const img = new Image();
+                        img.crossOrigin = "Anonymous";
+                        img.onload = () => {
+                            ctx.drawImage(img, (x - minX) * tileW * upscale, (y - minY) * tileW * upscale, tileW * upscale, tileW * upscale);
+                            resolve();
+                        };
+                        img.onerror = () => resolve();
+                        
+                        if (timestamp) {
+                            img.src = `${radarHost}/v2/radar/${timestamp}/256/${z}/${x}/${y}/6/1_1.png`;
+                        } else {
+                            resolve();
                         }
-                    }
-                    let temp = v1; v1 = v2; v2 = temp;
+                    });
+                    promises.push(p);
                 }
-                const smoothedValues = v1;
+            }
+            
+            await Promise.all(promises);
+            
+            const imgData = ctx.getImageData(0, 0, totalW, totalH);
+            const paddedW = totalW + 2;
+            const paddedH = totalH + 2;
+            const rawValues = new Float64Array(paddedW * paddedH).fill(0);
+            
+            let sumIntensity = 0;
+            let maxVal = 0;
+            let minVal = 1.0;
 
-                // Contours
-                const thresholds = [0.08, 0.2, 0.4, 0.6]; 
-                const contours = d3.contours().size([paddedW, paddedH]).thresholds(thresholds)(smoothedValues);
-                
-                const n = Math.pow(2, z);
-                const lon1 = minX / n * 360 - 180; 
-                const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
-                const lat1 = latRad1 * 180 / Math.PI;
-                const lon2 = (maxX + 1) / n * 360 - 180;
-                const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
-                const lat2 = latRad2 * 180 / Math.PI;
-                const latDiff = lat2 - lat1;
-                const lonDiff = lon2 - lon1;
+            for (let y = 0; y < totalH; y++) {
+                for (let x = 0; x < totalW; x++) {
+                    const srcIdx = (y * totalW + x) * 4;
+                    const dstIdx = (y + 1) * paddedW + (x + 1);
+                    const val = imgData.data[srcIdx + 3] / 255.0;
+                    rawValues[dstIdx] = val;
+                    sumIntensity += val;
+                    if (val > maxVal) maxVal = val;
+                    if (val < minVal) minVal = val;
+                }
+            }
 
-                const features = [];
-                contours.forEach(contour => {
-                    if (!contour.coordinates.length) return;
-                    const geometry = {
-                        type: "MultiPolygon",
-                        coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
-                            const mappedRing = ring.map(([px, py]) => {
-                                const normX = (px - 1) / totalW;
-                                const normY = (py - 1) / totalH;
-                                const lon = lon1 + normX * lonDiff;
-                                const lat = lat1 + normY * latDiff;
-                                return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
-                            });
-                            if (mappedRing.length > 0 && (mappedRing[0][0] !== mappedRing[mappedRing.length-1][0] || mappedRing[0][1] !== mappedRing[mappedRing.length-1][1])) {
-                                mappedRing.push(mappedRing[0]);
-                            }
-                            mappedRing.reverse();
-                            return mappedRing;
-                        }))
-                    };
-                    features.push({ type: "Feature", properties: { level: contour.value }, geometry: geometry });
-                });
-
-                const geojson = { type: "FeatureCollection", features: features };
+            const avgIntensity = sumIntensity / (totalW * totalH);
+            const range = maxVal - minVal;
+            
+            if ((maxVal > 0 && range < 0.01) || avgIntensity > 0.9) {
+                console.warn("Discarding tile: Solid/Placeholder", { avg: avgIntensity, range });
+                const geojson = { type: "FeatureCollection", features: [] };
                 radarCache[cacheKey] = geojson;
                 updateMapSource(geojson);
-                } finally {
-                    isFetching = false;
-                }
+                return;
             }
 
-            // Init Data
-            async function initRadarData() {
-                try {
-                    const res = await fetch('https://api.rainviewer.com/public/weather-maps.json');
-                    const data = await res.json();
-                    
-                    if (data.host) radarHost = data.host;
+            // Mild Blur (1 pass, radius 1)
+            let v1 = new Float64Array(rawValues);
+            let v2 = new Float64Array(paddedW * paddedH);
+            const passes = 1;
+            const radius = 1;
+            const diameter = radius * 2 + 1;
+            const divisor = diameter * diameter;
 
-                    if (data.radar && data.radar.past) {
-                        // Get latest timestamp from API to ensure sync
-                        const past = data.radar.past;
-                        const latestInfo = past[past.length - 1];
-                        const latestTime = latestInfo.time;
-
-                        // Generate timestamps for last 6 hours (10 min intervals) to avoid 429s
-                        radarTimestamps = [];
-                        const interval = 600; // 10 mins
-                        const count = (6 * 60 * 60) / interval; // 36 steps
-                        
-                        for (let i = 0; i < count; i++) {
-                            radarTimestamps.unshift(latestTime - (i * interval));
+            for (let p = 0; p < passes; p++) {
+                for (let y = radius; y < paddedH - radius; y++) {
+                    for (let x = radius; x < paddedW - radius; x++) {
+                        let sum = 0;
+                        for (let dy = -radius; dy <= radius; dy++) {
+                            for (let dx = -radius; dx <= radius; dx++) {
+                                sum += v1[(y + dy) * paddedW + (x + dx)];
+                            }
                         }
-                        
-                        const slider = document.getElementById('timeSlider');
-                        slider.max = radarTimestamps.length - 1;
-                        
-                        // Start Animation loop
-                        playAnimation();
+                        v2[y * paddedW + x] = sum / divisor;
                     }
-                } catch (e) {
-                    console.error("RainViewer API Error", e);
                 }
+                let temp = v1; v1 = v2; v2 = temp;
             }
+            const smoothedValues = v1;
 
-            let animationTimer;
-            let isFetching = false;
-            const playPauseBtn = document.getElementById('playPauseBtn');
+            // Contours
+            const thresholds = [0.08, 0.2, 0.4, 0.6]; 
+            const contours = d3.contours().size([paddedW, paddedH]).thresholds(thresholds)(smoothedValues);
+            
+            const n = Math.pow(2, z);
+            const lon1 = minX / n * 360 - 180; 
+            const latRad1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * minY / n)));
+            const lat1 = latRad1 * 180 / Math.PI;
+            const lon2 = (maxX + 1) / n * 360 - 180;
+            const latRad2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxY + 1) / n)));
+            const lat2 = latRad2 * 180 / Math.PI;
+            const latDiff = lat2 - lat1;
+            const lonDiff = lon2 - lon1;
 
-            function playAnimation() {
-                playPauseBtn.innerText = "Pause";
-                const slider = document.getElementById('timeSlider');
-                let index = parseInt(slider.value);
-                
-                // Recursive loop to prevent overlapping requests
-                const loop = async () => {
-                    if (isFetching) {
-                        animationTimer = setTimeout(loop, 500);
-                        return;
-                    }
-
-                    index++;
-                    if (index >= radarTimestamps.length) index = 0;
-                    
-                    slider.value = index;
-                    const ts = radarTimestamps[index];
-                    updateTimeLabel(ts);
-                    
-                    // Wait for fetch to complete
-                    try {
-                        await vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
-                    } catch (e) {
-                        console.warn("Frame skipped", e);
-                    }
-                    
-                    animationTimer = setTimeout(loop, 500); // 500ms delay between frames
+            const features = [];
+            contours.forEach(contour => {
+                if (!contour.coordinates.length) return;
+                const geometry = {
+                    type: "MultiPolygon",
+                    coordinates: contour.coordinates.map(polygon => polygon.map(ring => {
+                        const mappedRing = ring.map(([px, py]) => {
+                            const normX = (px - 1) / totalW;
+                            const normY = (py - 1) / totalH;
+                            const lon = lon1 + normX * lonDiff;
+                            const lat = lat1 + normY * latDiff;
+                            return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+                        });
+                        if (mappedRing.length > 0 && (mappedRing[0][0] !== mappedRing[mappedRing.length-1][0] || mappedRing[0][1] !== mappedRing[mappedRing.length-1][1])) {
+                            mappedRing.push(mappedRing[0]);
+                        }
+                        mappedRing.reverse();
+                        return mappedRing;
+                    }))
                 };
+                features.push({ type: "Feature", properties: { level: contour.value }, geometry: geometry });
+            });
+
+            const geojson = { type: "FeatureCollection", features: features };
+            radarCache[cacheKey] = geojson;
+            updateMapSource(geojson);
+            } finally {
+                isFetching = false;
+            }
+        }
+
+        // Init Data
+        async function initRadarData() {
+            try {
+                const res = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+                const data = await res.json();
                 
-                loop();
-            }
+                if (data.host) radarHost = data.host;
 
-            function stopAnimation() {
-                playPauseBtn.innerText = "Play";
-                if (animationTimer) {
-                    clearTimeout(animationTimer);
-                    animationTimer = null;
-                }
-            }
+                if (data.radar && data.radar.past) {
+                    const past = data.radar.past;
+                    const latestInfo = past[past.length - 1];
+                    const latestTime = latestInfo.time;
 
-            playPauseBtn.addEventListener('click', () => {
-                if (animationTimer) {
-                    stopAnimation();
-                } else {
+                    radarTimestamps = [];
+                    const interval = 600; // 10 mins
+                    const count = (6 * 60 * 60) / interval; // 36 steps
+                    
+                    for (let i = 0; i < count; i++) {
+                        radarTimestamps.unshift(latestTime - (i * interval));
+                    }
+                    
+                    const slider = document.getElementById('timeSlider');
+                    slider.max = radarTimestamps.length - 1;
+                    
                     playAnimation();
                 }
-            });
-
-            function updateTimeLabel(ts) {
-                const date = new Date(ts * 1000);
-                const h = String(date.getUTCHours()).padStart(2, '0');
-                const m = String(date.getUTCMinutes()).padStart(2, '0');
-                document.getElementById('timeLabel').innerText = `${h}:${m} Z`;
+            } catch (e) {
+                console.error("RainViewer API Error", e);
             }
+        }
 
-            // Slider Listener
-            let sliderDebounce;
-            document.getElementById('timeSlider').addEventListener('input', (e) => {
-                stopAnimation(); // Stop auto-play on user interaction
-                const index = parseInt(e.target.value);
-                if (radarTimestamps[index]) {
-                    const ts = radarTimestamps[index];
-                    updateTimeLabel(ts);
-                    
-                    if (sliderDebounce) clearTimeout(sliderDebounce);
-                    sliderDebounce = setTimeout(() => {
-                        vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
-                    }, 150); // 150ms debounce
+        let animationTimer;
+        let isFetching = false;
+        const playPauseBtn = document.getElementById('playPauseBtn');
+
+        function playAnimation() {
+            playPauseBtn.innerText = "Pause";
+            const slider = document.getElementById('timeSlider');
+            let index = parseInt(slider.value);
+            
+            const loop = async () => {
+                if (isFetching) {
+                    animationTimer = setTimeout(loop, 500);
+                    return;
                 }
-            });
 
-            // Toggle
-            document.getElementById('radarToggle').addEventListener('change', (e) => {
-                const visibility = e.target.checked ? 'visible' : 'none';
-                ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
-                    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
-                });
-            });
+                index++;
+                if (index >= radarTimestamps.length) index = 0;
+                
+                slider.value = index;
+                const ts = radarTimestamps[index];
+                updateTimeLabel(ts);
+                
+                try {
+                    await vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                } catch (e) {
+                    console.warn("Frame skipped", e);
+                }
+                
+                animationTimer = setTimeout(loop, 500); 
+            };
+            
+            loop();
+        }
 
-            // Topo Toggle
-            document.getElementById('topoToggle').addEventListener('change', (e) => {
-                const visibility = e.target.checked ? 'visible' : 'none';
-                if (map.getLayer('contour-lines-high')) map.setLayoutProperty('contour-lines-high', 'visibility', visibility);
-                if (map.getLayer('contour-lines-low')) map.setLayoutProperty('contour-lines-low', 'visibility', visibility);
-                if (e.target.checked && map.getZoom() < 10) updateTerrainContours();
-            });
+        function stopAnimation() {
+            playPauseBtn.innerText = "Play";
+            if (animationTimer) {
+                clearTimeout(animationTimer);
+                animationTimer = null;
+            }
+        }
 
-            // Opacity
-            document.getElementById('radarOpacity').addEventListener('input', (e) => {
-                const opacity = parseFloat(e.target.value);
-                if (map.getLayer('radar-conus-fill')) map.setPaintProperty('radar-conus-fill', 'fill-extrusion-opacity', opacity);
-                if (map.getLayer('radar-conus-shadow')) map.setPaintProperty('radar-conus-shadow', 'fill-opacity', opacity * 0.4);
-                if (map.getLayer('radar-conus-pattern')) map.setPaintProperty('radar-conus-pattern', 'fill-extrusion-opacity', opacity * 0.125);
-            });
+        playPauseBtn.addEventListener('click', () => {
+            if (animationTimer) {
+                stopAnimation();
+            } else {
+                playAnimation();
+            }
+        });
 
-            // Topo Opacity
-            document.getElementById('topoOpacity').addEventListener('input', (e) => {
-                const opacity = parseFloat(e.target.value);
-                if (map.getLayer('contour-lines-high')) map.setPaintProperty('contour-lines-high', 'line-opacity', opacity);
-                if (map.getLayer('contour-lines-low')) map.setPaintProperty('contour-lines-low', 'line-opacity', opacity);
-            });
+        function updateTimeLabel(ts) {
+            const date = new Date(ts * 1000);
+            const h = String(date.getUTCHours()).padStart(2, '0');
+            const m = String(date.getUTCMinutes()).padStart(2, '0');
+            document.getElementById('timeLabel').innerText = `${h}:${m} Z`;
+        }
 
-            // Start
-            initRadarData();
-            if (document.getElementById('topoToggle').checked) updateTerrainContours();
+        let sliderDebounce;
+        document.getElementById('timeSlider').addEventListener('input', (e) => {
+            stopAnimation();
+            const index = parseInt(e.target.value);
+            if (radarTimestamps[index]) {
+                const ts = radarTimestamps[index];
+                updateTimeLabel(ts);
+                
+                if (sliderDebounce) clearTimeout(sliderDebounce);
+                sliderDebounce = setTimeout(() => {
+                    vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
+                }, 150);
+            }
+        });
+
+        document.getElementById('radarToggle').addEventListener('change', (e) => {
+            const visibility = e.target.checked ? 'visible' : 'none';
+            ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
+                if (mapTop.getLayer(id)) mapTop.setLayoutProperty(id, 'visibility', visibility);
+            });
+        });
+
+        document.getElementById('topoToggle').addEventListener('change', (e) => {
+            const visibility = e.target.checked ? 'visible' : 'none';
+            // Apply to BOTH maps
+            [mapTop, mapBottom].forEach(m => {
+                if (m.getLayer('contour-lines-high')) m.setLayoutProperty('contour-lines-high', 'visibility', visibility);
+                if (m.getLayer('contour-lines-low')) m.setLayoutProperty('contour-lines-low', 'visibility', visibility);
+                if (e.target.checked && m.getZoom() < 10) updateTerrainContours(m);
+            });
+        });
+
+        document.getElementById('radarOpacity').addEventListener('input', (e) => {
+            const opacity = parseFloat(e.target.value);
+            // Only top map has radar
+            if (mapTop.getLayer('radar-conus-fill')) mapTop.setPaintProperty('radar-conus-fill', 'fill-extrusion-opacity', opacity);
+            if (mapTop.getLayer('radar-conus-shadow')) mapTop.setPaintProperty('radar-conus-shadow', 'fill-opacity', opacity * 0.4);
+            if (mapTop.getLayer('radar-conus-pattern')) mapTop.setPaintProperty('radar-conus-pattern', 'fill-extrusion-opacity', opacity * 0.125);
+        });
+
+        document.getElementById('topoOpacity').addEventListener('input', (e) => {
+            const opacity = parseFloat(e.target.value);
+            // Apply to BOTH maps
+            [mapTop, mapBottom].forEach(m => {
+                if (m.getLayer('contour-lines-high')) m.setPaintProperty('contour-lines-high', 'line-opacity', opacity);
+                if (m.getLayer('contour-lines-low')) m.setPaintProperty('contour-lines-low', 'line-opacity', opacity);
+            });
+        });
+
+        // Start
+        initRadarData();
+        
+        mapTop.once('load', () => {
+             if (document.getElementById('topoToggle').checked) {
+                 updateTerrainContours(mapTop);
+                 updateTerrainContours(mapBottom);
+             }
         });
     </script>
 </body>
 </html>
-
