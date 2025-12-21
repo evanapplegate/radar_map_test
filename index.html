@@ -49,9 +49,9 @@
             font-size: 0; /* Hide text */
             width: 0;
             height: 0;
-            border-left: 10px solid transparent;
-            border-right: 10px solid transparent;
-            border-top: 10px solid black;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid black;
             margin: 0;
         }
     </style>
@@ -64,6 +64,10 @@
             <div id="controls-content">
                 <label>
                     <input type="checkbox" id="radarToggle" checked> Radar
+                </label>
+                <br>
+                <label>
+                    <input type="checkbox" id="shadowToggle" checked> Cloud Shadow
                 </label>
                 <br>
                 <label>
@@ -695,9 +699,23 @@
 
         document.getElementById('radarToggle').addEventListener('change', (e) => {
             const visibility = e.target.checked ? 'visible' : 'none';
-            ['radar-conus-shadow', 'radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
+            ['radar-conus-fill', 'radar-conus-pattern'].forEach(id => {
                 if (mapTop.getLayer(id)) mapTop.setLayoutProperty(id, 'visibility', visibility);
             });
+            // Handle shadow separately if main toggle is off, but respect shadow toggle if on
+            if (!e.target.checked) {
+                 if (mapTop.getLayer('radar-conus-shadow')) mapTop.setLayoutProperty('radar-conus-shadow', 'visibility', 'none');
+            } else {
+                const shadowChecked = document.getElementById('shadowToggle').checked;
+                 if (mapTop.getLayer('radar-conus-shadow')) mapTop.setLayoutProperty('radar-conus-shadow', 'visibility', shadowChecked ? 'visible' : 'none');
+            }
+        });
+
+        document.getElementById('shadowToggle').addEventListener('change', (e) => {
+             // Only show if radar main toggle is also on
+             const radarOn = document.getElementById('radarToggle').checked;
+             const visibility = (e.target.checked && radarOn) ? 'visible' : 'none';
+             if (mapTop.getLayer('radar-conus-shadow')) mapTop.setLayoutProperty('radar-conus-shadow', 'visibility', visibility);
         });
 
         document.getElementById('topoToggle').addEventListener('change', (e) => {
