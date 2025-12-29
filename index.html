@@ -76,8 +76,12 @@
                 <input type="checkbox" id="topoToggle"> Topo Lines
             </label>
             <br>
-                <label>
-                    Scale X: 
+            <label>
+                <input type="checkbox" id="bgToggle"> Dark Background
+            </label>
+            <br>
+            <label>
+                Scale X:
                     <input type="range" id="scaleX" min="0.1" max="2" step="0.01" value="1" style="width: 100px;">
                     <input type="number" id="scaleXNum" min="0.1" max="2" step="0.01" value="1" style="width: 50px;">
                 </label>
@@ -760,6 +764,13 @@
                 if (m.getLayer('contour-lines-low')) m.setLayoutProperty('contour-lines-low', 'visibility', visibility);
                 if (e.target.checked && m.getZoom() < 10) updateTerrainContours(m);
             });
+        });
+
+        document.getElementById('bgToggle').addEventListener('change', (e) => {
+            const color = e.target.checked ? '#000000' : '#ffffff';
+            if (mapTop.getLayer('background')) {
+                mapTop.setPaintProperty('background', 'background-color', color);
+            }
         });
 
         document.getElementById('radarOpacity').addEventListener('input', (e) => {
