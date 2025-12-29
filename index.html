@@ -63,6 +63,10 @@
             <div id="controls-toggle">▼ Controls</div>
             <div id="controls-content">
                 <label>
+                    <input type="checkbox" id="showRadarView" checked> Show Radar View
+                </label>
+                <br>
+                <label>
                     <input type="checkbox" id="radarToggle" checked> Radar
                 </label>
                 <br>
@@ -703,6 +707,26 @@
                     vectorizeRadarRegion(4, 2, 5, 5, 7, ts);
                 }, 150);
             }
+        });
+
+        document.getElementById('showRadarView').addEventListener('change', (e) => {
+            const topContainer = document.getElementById('mapTop').parentElement;
+            const bottomContainer = document.getElementById('mapBottom').parentElement;
+            
+            if (e.target.checked) {
+                topContainer.style.display = 'block';
+                topContainer.style.height = '50%';
+                bottomContainer.style.height = '50%';
+            } else {
+                topContainer.style.display = 'none';
+                bottomContainer.style.height = '100%';
+            }
+            
+            // Resize maps after layout change
+            setTimeout(() => {
+                mapTop.resize();
+                mapBottom.resize();
+            }, 50);
         });
 
         document.getElementById('radarToggle').addEventListener('change', (e) => {
