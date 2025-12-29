@@ -9,7 +9,7 @@
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
-        .map-container { width: 100%; height: 50%; position: relative; border-bottom: 1px solid #ccc; }
+        .map-container { width: 100%; height: 50%; position: relative; border-bottom: 1px solid #ccc; overflow: hidden; }
         #mapTop { width: 100%; height: 100%; }
         #mapBottom { width: 100%; height: 100%; }
         
@@ -72,6 +72,14 @@
                 <br>
                 <label>
                     <input type="checkbox" id="topoToggle"> Topo Lines
+                </label>
+                <br>
+                <label>
+                    Scale X: <input type="range" id="scaleX" min="0.1" max="2" step="0.1" value="1">
+                </label>
+                <br>
+                <label>
+                    Scale Y: <input type="range" id="scaleY" min="0.1" max="2" step="0.1" value="1">
                 </label>
                 <br>
                 <label>
@@ -744,6 +752,32 @@
                 if (m.getLayer('contour-lines-low')) m.setPaintProperty('contour-lines-low', 'line-opacity', opacity);
             });
         });
+
+        // Scale Logic
+        const scaleXInput = document.getElementById('scaleX');
+        const scaleYInput = document.getElementById('scaleY');
+
+        function updateMapTransform() {
+            const sx = parseFloat(scaleXInput.value);
+            const sy = parseFloat(scaleYInput.value);
+            
+            // Apply transform to map containers' inner map divs
+            // We need to target the map elements.
+            const maps = [document.getElementById('mapTop'), document.getElementById('mapBottom')];
+            maps.forEach(mapDiv => {
+                // Apply transform
+                mapDiv.style.transform = `scale(${sx}, ${sy})`;
+                mapDiv.style.transformOrigin = 'center center';
+                
+                // Optional: Adjust width/height to fill if scaling down? 
+                // User asked for "squash/stretch", so simple transform is likely what is expected visually.
+                // If they want to keep it full width while squashed, they'd need to inverse scale the width.
+                // Let's keep it simple as requested: "slider to 50%, makes everything look narrow"
+            });
+        }
+
+        scaleXInput.addEventListener('input', updateMapTransform);
+        scaleYInput.addEventListener('input', updateMapTransform);
 
         // Start
         initRadarData();
