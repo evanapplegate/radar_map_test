@@ -57,50 +57,50 @@
     </style>
 </head>
 <body>
+    <div id="controls">
+        <div id="controls-toggle">▼ Controls</div>
+        <div id="controls-content">
+            <label>
+                <input type="checkbox" id="showRadarView" checked> Show Radar View
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="radarToggle" checked> Radar
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="shadowToggle" checked> Cloud Shadow
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="topoToggle"> Topo Lines
+            </label>
+            <br>
+            <label>
+                Scale X: <input type="range" id="scaleX" min="0.1" max="2" step="0.1" value="1">
+            </label>
+            <br>
+            <label>
+                Scale Y: <input type="range" id="scaleY" min="0.1" max="2" step="0.1" value="1">
+            </label>
+            <br>
+            <label>
+                Topo Opacity: <input type="range" id="topoOpacity" min="0" max="1" step="0.1" value="0.3">
+            </label>
+            <br>
+            <label>
+                Radar Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
+            </label>
+            <br>
+            <label>
+                Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
+                <button id="playPauseBtn" style="cursor: pointer; padding: 2px 5px;">Pause</button>
+                <span id="timeLabel">Loading...</span>
+            </label>
+        </div>
+    </div>
     <div class="map-container">
         <div id="mapTop"></div>
-        <div id="controls">
-            <div id="controls-toggle">▼ Controls</div>
-            <div id="controls-content">
-                <label>
-                    <input type="checkbox" id="showRadarView" checked> Show Radar View
-                </label>
-                <br>
-                <label>
-                    <input type="checkbox" id="radarToggle" checked> Radar
-                </label>
-                <br>
-                <label>
-                    <input type="checkbox" id="shadowToggle" checked> Cloud Shadow
-                </label>
-                <br>
-                <label>
-                    <input type="checkbox" id="topoToggle"> Topo Lines
-                </label>
-                <br>
-                <label>
-                    Scale X: <input type="range" id="scaleX" min="0.1" max="2" step="0.1" value="1">
-                </label>
-                <br>
-                <label>
-                    Scale Y: <input type="range" id="scaleY" min="0.1" max="2" step="0.1" value="1">
-                </label>
-                <br>
-                <label>
-                    Topo Opacity: <input type="range" id="topoOpacity" min="0" max="1" step="0.1" value="0.3">
-                </label>
-                <br>
-                <label>
-                    Radar Opacity: <input type="range" id="radarOpacity" min="0" max="1" step="0.1" value="0.4">
-                </label>
-                <br>
-                <label>
-                    Time: <input type="range" id="timeSlider" min="0" max="0" step="1" value="0">
-                    <button id="playPauseBtn" style="cursor: pointer; padding: 2px 5px;">Pause</button>
-                    <span id="timeLabel">Loading...</span>
-                </label>
-            </div>
-        </div>
     </div>
     <div class="map-container" style="border-bottom: none;">
         <div id="mapBottom"></div>
