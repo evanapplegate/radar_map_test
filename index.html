@@ -76,9 +76,11 @@
                 <input type="checkbox" id="topoToggle"> Topo Lines
             </label>
             <br>
-            <label>
-                Scale X: <input type="range" id="scaleX" min="0.1" max="2" step="0.1" value="1">
-            </label>
+                <label>
+                    Scale X: 
+                    <input type="range" id="scaleX" min="0.1" max="2" step="0.01" value="1" style="width: 100px;">
+                    <input type="number" id="scaleXNum" min="0.1" max="2" step="0.01" value="1" style="width: 50px;">
+                </label>
             <br>
             <label>
                 Scale Y: <input type="range" id="scaleY" min="0.1" max="2" step="0.1" value="1">
@@ -779,28 +781,31 @@
 
         // Scale Logic
         const scaleXInput = document.getElementById('scaleX');
+        const scaleXNum = document.getElementById('scaleXNum');
         const scaleYInput = document.getElementById('scaleY');
 
         function updateMapTransform() {
             const sx = parseFloat(scaleXInput.value);
             const sy = parseFloat(scaleYInput.value);
             
+            // Sync number input
+            scaleXNum.value = sx;
+            
             // Apply transform to map containers' inner map divs
-            // We need to target the map elements.
             const maps = [document.getElementById('mapTop'), document.getElementById('mapBottom')];
             maps.forEach(mapDiv => {
-                // Apply transform
                 mapDiv.style.transform = `scale(${sx}, ${sy})`;
                 mapDiv.style.transformOrigin = 'center center';
-                
-                // Optional: Adjust width/height to fill if scaling down? 
-                // User asked for "squash/stretch", so simple transform is likely what is expected visually.
-                // If they want to keep it full width while squashed, they'd need to inverse scale the width.
-                // Let's keep it simple as requested: "slider to 50%, makes everything look narrow"
             });
         }
 
         scaleXInput.addEventListener('input', updateMapTransform);
+        
+        scaleXNum.addEventListener('input', () => {
+            scaleXInput.value = scaleXNum.value;
+            updateMapTransform();
+        });
+
         scaleYInput.addEventListener('input', updateMapTransform);
 
         // Start
